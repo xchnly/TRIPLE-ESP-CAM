@@ -10,10 +10,12 @@ Fungsi:
 
 Jalankan:
     pip install -r requirements.txt
-    python app.py            # buka http://<ip-komputer>:5000
+    python app.py            # mode router: buka http://<ip-komputer>:5000
+    python app.py --hotspot  # mode WiFi dari ESP (laptop connect ke hotspot cam1)
 """
 
 import os
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -30,6 +32,12 @@ CAPTURE_TIMEOUT_S = 10
 # Kamera bisa juga didaftarkan manual (tanpa heartbeat) lewat env, contoh:
 #   STATIC_CAMS="cam1=192.168.1.51,cam2=192.168.1.52,cam3=192.168.1.53"
 STATIC_CAMS = os.environ.get("STATIC_CAMS", "")
+
+# Mode hotspot ESP (USE_ESP_HOTSPOT 1 di config.h): IP kamera sudah tetap.
+#   python app.py --hotspot
+HOTSPOT_CAMS = "cam1=192.168.4.1,cam2=192.168.4.202,cam3=192.168.4.203"
+if "--hotspot" in sys.argv and not STATIC_CAMS:
+    STATIC_CAMS = HOTSPOT_CAMS
 
 app = Flask(__name__)
 os.makedirs(CAPTURE_DIR, exist_ok=True)

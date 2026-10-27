@@ -27,18 +27,29 @@ Server mengkoordinasi: ambil foto dari **semua kamera sekaligus**, live stream, 
 - Flash LED per kamera atau semua
 - Auto-capture terjadwal (setiap N detik)
 
+## Pilih mode jaringan (`USE_ESP_HOTSPOT` di `config.h`)
+
+| | Mode 1: WiFi dari ESP (default) | Mode 0: Router / hotspot HP |
+|---|---|---|
+| WiFi | `cam1` memancarkan hotspot `TRIPLE-ESP-CAM` (pass `12345678`) | WiFi rumah / hotspot HP 2.4 GHz |
+| IP kamera | tetap: cam1 `192.168.4.1`, cam2 `192.168.4.202`, cam3 `192.168.4.203` | dari router (dideteksi via heartbeat) |
+| Laptop | connect ke WiFi `TRIPLE-ESP-CAM` | connect ke WiFi yang sama |
+| Jalankan server | `python app.py --hotspot` | `python app.py` |
+| Yang perlu diisi | hanya `CAM_NUMBER` & `CAM_NAME` | + `WIFI_SSID`, `WIFI_PASSWORD`, `SERVER_URL` |
+
+Catatan mode 1: nyalakan **cam1 dulu** (dia "router"-nya). Selama laptop tersambung ke hotspot ESP, laptop tidak punya internet. Jarak tiap kamera ke cam1 jangan terlalu jauh (±10–20 m tanpa halangan).
+
 ## 1. Upload firmware ke tiap ESP32-CAM
 
 1. Arduino IDE → Boards Manager → install **esp32** by Espressif.
 2. Buka `firmware/esp32cam/esp32cam.ino`.
 3. Edit `firmware/esp32cam/config.h`:
-   - `WIFI_SSID`, `WIFI_PASSWORD`
-   - `SERVER_URL` → IP komputer yang menjalankan server, mis. `http://192.168.1.100:5000`
-   - `CAM_ID` → **`cam1`**, lalu `cam2`, lalu `cam3` untuk board berikutnya (harus unik)
+   - `CAM_NUMBER` → **`1`**, lalu `2`, lalu `3` untuk board berikutnya (harus unik)
    - `CAM_NAME` → nama bebas
+   - Mode 0 saja: `WIFI_SSID`, `WIFI_PASSWORD`, `SERVER_URL` (IP komputer server, mis. `http://192.168.1.100:5000`)
 4. Tools → Board: **AI Thinker ESP32-CAM**, Partition Scheme: *Huge APP*, PSRAM: *Enabled*.
 5. Upload (pakai FTDI / ESP32-CAM-MB; untuk FTDI: GPIO0 ke GND saat upload, lalu lepas & reset).
-6. Ulangi untuk 3 board dengan `CAM_ID` berbeda.
+6. Ulangi untuk 3 board dengan `CAM_NUMBER` berbeda.
 
 Buka Serial Monitor (115200) untuk melihat IP tiap kamera.
 
@@ -51,7 +62,9 @@ pip install -r requirements.txt
 python app.py
 ```
 
-Buka `http://<ip-komputer>:5000` dari browser mana pun di jaringan yang sama.
+Mode hotspot ESP: sambungkan laptop ke WiFi `TRIPLE-ESP-CAM`, jalankan `python app.py --hotspot`, lalu buka `http://localhost:5000`.
+
+Mode router: buka `http://<ip-komputer>:5000` dari browser mana pun di jaringan yang sama.
 Jika firewall aktif, izinkan port 5000.
 
 **Tanpa heartbeat?** Daftarkan kamera manual:

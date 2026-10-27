@@ -12,8 +12,11 @@
  *                              contrast, saturation, vflip, hmirror, flash
  *   http://<ip>:81/stream   -> live stream MJPEG
  *
- * Node juga mengirim heartbeat ke server pusat (SERVER_URL/api/register)
- * sehingga server otomatis tahu IP & status tiap kamera.
+ * Jaringan (lihat config.h):
+ *   USE_ESP_HOTSPOT 1 -> cam1 memancarkan WiFi sendiri, cam2/cam3 + laptop
+ *                        connect ke situ dengan IP tetap; server mem-polling.
+ *   USE_ESP_HOTSPOT 0 -> semua connect ke router, node mengirim heartbeat ke
+ *                        server pusat (SERVER_URL/api/register).
  */
 
 #include "esp_camera.h"
@@ -52,8 +55,17 @@ static const char *STREAM_PART         = "Content-Type: image/jpeg\r\nContent-Le
 httpd_handle_t api_httpd    = NULL;
 httpd_handle_t stream_httpd = NULL;
 
+#define STR_(x) #x
+#define STR(x) STR_(x)
+static const char *camId = "cam" STR(CAM_NUMBER);
+static const bool isHotspotHost = USE_ESP_HOTSPOT && CAM_NUMBER == 1;
+
 bool flashOn = false;
 unsigned long lastHeartbeat = 0;
+
+IPAddress myIP() {
+  return isHotspotHost ? WiFi.softAPIP() : WiFi.localIP();
+}
 
 // ------------------------------------------------------------------
 //  Kamera
@@ -114,8 +126,8 @@ static esp_err_t index_handler(httpd_req_t *req) {
            "<a href='http://%s:81/stream'>stream</a></p>"
            "<img src='http://%s:81/stream' style='max-width:100%%'>"
            "</body></html>",
-           CAM_NAME, CAM_ID,
-           WiFi.localIP().toString().c_str(), WiFi.localIP().toString().c_str());
+           CAM_NAME, camId,
+           myIP().toString().c_str(), myIP().toString().c_str());
   httpd_resp_set_type(req, "text/html");
   return httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
 }
@@ -131,7 +143,7 @@ static esp_err_t capture_handler(httpd_req_t *req) {
   httpd_resp_set_type(req, "image/jpeg");
   httpd_resp_set_hdr(req, "Content-Disposition", "inline; filename=capture.jpg");
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-  httpd_resp_set_hdr(req, "X-Cam-Id", CAM_ID);
+  httpd_resp_set_hdr(req, "X-Cam-Id", camId);
   esp_err_t res = httpd_resp_send(req, (const char *)fb->buf, fb->len);
   esp_camera_fb_return(fb);
   return res;
@@ -165,7 +177,7 @@ static String statusJson() {
            "\"rssi\":%d,\"uptime\":%lu,\"heap\":%u,\"psram\":%s,"
            "\"framesize\":%d,\"quality\":%d,\"brightness\":%d,\"contrast\":%d,"
            "\"saturation\":%d,\"vflip\":%d,\"hmirror\":%d,\"flash\":%d}",
-           CAM_ID, CAM_NAME, WiFi.localIP().toString().c_str(), WiFi.macAddress().c_str(),
+           camId, CAM_NAME, myIP().toString().c_str(), WiFi.macAddress().c_str(),
            WiFi.RSSI(), millis() / 1000, ESP.getFreeHeap(), psramFound() ? "true" : "false",
            s->status.framesize, s->status.quality, s->status.brightness, s->status.contrast,
            s->status.saturation, s->status.vflip, s->status.hmirror, flashOn ? 1 : 0);
@@ -241,11 +253,27 @@ void startServers() {
 // ------------------------------------------------------------------
 //  WiFi & heartbeat ke server pusat
 // ------------------------------------------------------------------
+void startHotspot() {
+  // cam1 memancarkan WiFi sendiri (192.168.4.1), maks 8 perangkat
+  WiFi.mode(WIFI_AP);
+  WiFi.softAP(AP_SSID, AP_PASSWORD, AP_CHANNEL, 0, 8);
+  WiFi.setSleep(false);
+  Serial.printf("Hotspot \"%s\" aktif, IP: %s\n", AP_SSID, myIP().toString().c_str());
+}
+
 void connectWiFi() {
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);  // latensi stream lebih rendah
 
-  if (strlen(STATIC_IP) > 0) {
+  const char *ssid = WIFI_SSID, *pass = WIFI_PASSWORD;
+  if (USE_ESP_HOTSPOT) {
+    // cam2/cam3: IP tetap 192.168.4.20x di jaringan hotspot cam1
+    // (di luar rentang DHCP .2-.101 supaya tidak bentrok dengan laptop/HP)
+    ssid = AP_SSID;
+    pass = AP_PASSWORD;
+    IPAddress gw(192, 168, 4, 1);
+    WiFi.config(IPAddress(192, 168, 4, 200 + CAM_NUMBER), gw, IPAddress(255, 255, 255, 0), gw);
+  } else if (strlen(STATIC_IP) > 0) {
     IPAddress ip, gw, mask;
     ip.fromString(STATIC_IP);
     gw.fromString(GATEWAY_IP);
@@ -253,8 +281,8 @@ void connectWiFi() {
     WiFi.config(ip, gw, mask, gw);
   }
 
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  Serial.print("Menghubungkan WiFi");
+  WiFi.begin(ssid, pass);
+  Serial.printf("Menghubungkan ke WiFi \"%s\"", ssid);
   unsigned long start = millis();
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
@@ -264,15 +292,12 @@ void connectWiFi() {
       ESP.restart();
     }
   }
-  Serial.printf("\nTerhubung! IP: %s\n", WiFi.localIP().toString().c_str());
-
-  if (MDNS.begin(CAM_ID)) {             // bisa diakses via http://cam1.local
-    MDNS.addService("http", "tcp", 80);
-  }
+  Serial.printf("\nTerhubung! IP: %s\n", myIP().toString().c_str());
 }
 
 void sendHeartbeat() {
-  if (WiFi.status() != WL_CONNECTED) return;
+  // Di mode hotspot ESP, server yang mem-polling kamera (IP sudah tetap)
+  if (USE_ESP_HOTSPOT || WiFi.status() != WL_CONNECTED) return;
 
   HTTPClient http;
   http.setTimeout(3000);
@@ -299,16 +324,22 @@ void setup() {
     ESP.restart();
   }
 
-  connectWiFi();
+  if (isHotspotHost) startHotspot();
+  else connectWiFi();
+
+  if (MDNS.begin(camId)) {             // bisa diakses via http://cam1.local
+    MDNS.addService("http", "tcp", 80);
+  }
+
   startServers();
   sendHeartbeat();
 
   Serial.printf("Node %s siap: http://%s  stream: http://%s:81/stream\n",
-                CAM_ID, WiFi.localIP().toString().c_str(), WiFi.localIP().toString().c_str());
+                camId, myIP().toString().c_str(), myIP().toString().c_str());
 }
 
 void loop() {
-  if (WiFi.status() != WL_CONNECTED) {
+  if (!isHotspotHost && WiFi.status() != WL_CONNECTED) {
     Serial.println("WiFi putus, reconnect...");
     WiFi.reconnect();
     delay(5000);
