@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Triple ESP-CAM</title>
+<style>
+  :root { --bg:#0f1115; --card:#1a1d24; --line:#2a2f3a; --text:#e6e8ec; --muted:#8b92a1; --accent:#3b82f6; --ok:#22c55e; --bad:#ef4444; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,sans-serif; background:var(--bg); color:var(--text); }
+  header { display:flex; flex-wrap:wrap; gap:12px; align-items:center; justify-content:space-between; padding:14px 20px; border-bottom:1px solid var(--line); }
+  h1 { font-size:18px; margin:0; }
+  h2 { font-size:15px; margin:24px 20px 10px; color:var(--muted); font-weight:600; }
+  .bar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  button, select, input { background:var(--card); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:6px 10px; font-size:13px; }
+  button { cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); }
+  button:hover { filter:brightness(1.15); }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:16px; padding:0 20px; }
+  .cam { background:var(--card); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  .cam-head { display:flex; justify-content:space-between; align-items:center; padding:10px 12px; }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; }
+  .view { aspect-ratio:4/3; background:#000; display:flex; align-items:center; justify-content:center; color:var(--muted); font-size:13px; }
+  .view img { width:100%; height:100%; object-fit:contain; }
+  .meta { font-size:12px; color:var(--muted); padding:6px 12px; }
+  .controls { display:grid; grid-template-columns:1fr 1fr; gap:6px 10px; padding:8px 12px 12px; font-size:12px; }
+  .controls label { display:flex; flex-direction:column; gap:3px; color:var(--muted); }
+  .actions { display:flex; gap:6px; flex-wrap:wrap; padding:0 12px 12px; }
+  .gallery { display:grid; grid-template-columns:repeat(auto-fill,minmax(160px,1fr)); gap:10px; padding:0 20px 30px; }
+  .shot { background:var(--card); border:1px solid var(--line); border-radius:8px; overflow:hidden; font-size:11px; }
+  .shot img { width:100%; aspect-ratio:4/3; object-fit:cover; display:block; cursor:pointer; }
+  .shot div { display:flex; justify-content:space-between; align-items:center; padding:4px 6px; color:var(--muted); }
+  .shot button { padding:2px 6px; font-size:11px; }
+  #toast { position:fixed; bottom:16px; right:16px; background:var(--card); border:1px solid var(--line); padding:10px 14px; border-radius:8px; display:none; max-width:320px; font-size:13px; }
+  .empty { padding:0 20px; color:var(--muted); font-size:13px; }
+  @media (max-width:500px){ .grid,.gallery{padding:0 16px;} header{padding:12px 16px;} }
+</style>
+</head>
+<body>
+<header>
+  <h1>📷 Triple ESP-CAM <span id="count" style="color:var(--muted);font-weight:400"></span></h1>
+  <div class="bar">
+    <button class="primary" onclick="captureAll()">Capture semua</button>
+    <button onclick="controlAll('flash',1)">Flash ON semua</button>
+    <button onclick="controlAll('flash',0)">Flash OFF semua</button>
+    <label style="font-size:13px;color:var(--muted)">
+      <input type="checkbox" id="schedEnabled" onchange="saveSchedule()"> Auto-capture tiap
+    </label>
+    <input type="number" id="schedInterval" min="5" value="60" style="width:70px" onchange="saveSchedule()"> detik
+  </div>
+</header>
+
+<h2>Kamera</h2>
+<div class="grid" id="cams"></div>
+<p class="empty" id="noCams" style="display:none">Belum ada kamera terhubung. Pastikan SERVER_URL di config.h mengarah ke IP komputer ini.</p>
+
+<h2>Galeri</h2>
+<div class="gallery" id="gallery"></div>
+
+<div id="toast"></div>
+
+<script>
+const FRAMESIZES = {5:"QVGA 320x240",8:"VGA 640x480",9:"SVGA 800x600",10:"XGA 1024x768",11:"HD 1280x720",12:"SXGA 1280x1024",13:"UXGA 1600x1200"};
+const streaming = {};   // cam_id -> bool
+const rendered = {};    // cam_id -> element
+
+function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg; t.style.display='block'; clearTimeout(t._h); t._h=setTimeout(()=>t.style.display='none',3000); }
+async function api(url, opts={}){ const r=await fetch(url,{headers:{'Content-Type':'application/json'},...opts}); return r.json(); }
+
+function camCard(c){
+  const el=document.createElement('div'); el.className='cam'; el.id='cam-'+c.id;
+  const fs=Object.entries(FRAMESIZES).map(([v,n])=>`<option value="${v}">${n}</option>`).join('');
+  el.innerHTML=`
+    <div class="cam-head"><strong><span class="dot"></span><span class="name"></span></strong><small class="cid" style="color:var(--muted)"></small></div>
+    <div class="view"><span>Stream mati</span></div>
+    <div class="meta"></div>
+    <div class="actions">
+      <button class="primary" data-act="capture">Capture</button>
+      <button data-act="stream">Start stream</button>
+      <button data-act="snapshot">Snapshot</button>
+      <button data-act="flash">Flash</button>
+    </div>
+    <div class="controls">
+      <label>Resolusi<select data-var="framesize">${fs}</select></label>
+      <label>Kualitas (10=bagus)<input type="range" min="4" max="63" data-var="quality"></label>
+      <label>Brightness<input type="range" min="-2" max="2" data-var="brightness"></label>
+      <label>Contrast<input type="range" min="-2" max="2" data-var="contrast"></label>
+      <label>Saturation<input type="range" min="-2" max="2" data-var="saturation"></label>
+      <label style="flex-direction:row;gap:12px;align-items:center">
+        <span><input type="checkbox" data-var="vflip"> V-flip</span>
+        <span><input type="checkbox" data-var="hmirror"> Mirror</span>
+      </label>
+    </div>`;
+  el.querySelectorAll('[data-var]').forEach(inp=>inp.addEventListener('change',()=>{
+    const val = inp.type==='checkbox' ? (inp.checked?1:0) : inp.value;
+    control(c.id, inp.dataset.var, val);
+  }));
+  el.querySelector('[data-act=capture]').onclick=()=>capture(c.id);
+  el.querySelector('[data-act=stream]').onclick=()=>toggleStream(c.id);
+  el.querySelector('[data-act=snapshot]').onclick=()=>snapshot(c.id);
+  el.querySelector('[data-act=flash]').onclick=()=>control(c.id,'flash',rendered[c.id]._flash?0:1);
+  return el;
+}
+
+function updateCard(el,c){
+  el.querySelector('.dot').style.background = c.online?'var(--ok)':'var(--bad)';
+  el.querySelector('.name').textContent = c.name||c.id;
+  el.querySelector('.cid').textContent = c.id+' · '+c.ip;
+  el.querySelector('.meta').textContent = c.online
+    ? `RSSI ${c.rssi??'-'} dBm · uptime ${fmtUptime(c.uptime)} · heap ${c.heap?Math.round(c.heap/1024)+'KB':'-'}`
+    : 'OFFLINE';
+  el._flash = !!c.flash;
+  el.querySelector('[data-act=flash]').textContent = c.flash?'Flash OFF':'Flash ON';
+  el.querySelectorAll('[data-var]').forEach(inp=>{
+    if (document.activeElement===inp || c[inp.dataset.var]===undefined) return;
+    if (inp.type==='checkbox') inp.checked=!!c[inp.dataset.var]; else inp.value=c[inp.dataset.var];
+  });
+}
+
+function fmtUptime(s){ if(s==null) return '-'; const h=Math.floor(s/3600),m=Math.floor(s%3600/60); return h?`${h}j ${m}m`:`${m}m ${s%60}d`; }
+
+async function refreshCams(){
+  const cams = await api('/api/cameras');
+  document.getElementById('count').textContent = `(${cams.filter(c=>c.online).length}/${cams.length} online)`;
+  document.getElementById('noCams').style.display = cams.length?'none':'block';
+  const grid=document.getElementById('cams');
+  for (const c of cams){
+    if (!rendered[c.id]){ rendered[c.id]=camCard(c); grid.appendChild(rendered[c.id]); }
+    updateCard(rendered[c.id],c);
+  }
+}
+
+function toggleStream(id){
+  const el=rendered[id], view=el.querySelector('.view'), btn=el.querySelector('[data-act=stream]');
+  streaming[id]=!streaming[id];
+  if (streaming[id]){ view.innerHTML=`<img src="/api/stream/${id}?t=${Date.now()}">`; btn.textContent='Stop stream'; }
+  else { view.innerHTML='<span>Stream mati</span>'; btn.textContent='Start stream'; }
+}
+
+function snapshot(id){
+  const el=rendered[id];
+  if (streaming[id]) toggleStream(id);
+  el.querySelector('.view').innerHTML=`<img src="/api/snapshot/${id}?t=${Date.now()}">`;
+}
+
+async function capture(id){
+  toast(`Mengambil foto ${id}...`);
+  const r = await api(`/api/capture/${id}`,{method:'POST'});
+  toast(r.ok?`✔ ${r.file} (${Math.round(r.size/1024)} KB)`:`✘ ${id}: ${r.error}`);
+  loadGallery();
+}
+
+async function captureAll(){
+  toast('Capture semua kamera...');
+  const res = await api('/api/capture-all',{method:'POST'});
+  const ok=res.filter(r=>r.ok).length;
+  toast(`✔ ${ok}/${res.length} kamera berhasil`+(res.some(r=>!r.ok)?' — gagal: '+res.filter(r=>!r.ok).map(r=>r.id).join(', '):''));
+  loadGallery();
+}
+
+async function control(id,v,val){
+  const r = await api(`/api/control/${id}`,{method:'POST',body:JSON.stringify({var:v,val})});
+  if (r.error) toast(`✘ ${id}: ${r.error}`); else updateCard(rendered[id],{...r,online:true});
+}
+
+async function controlAll(v,val){
+  const res = await api('/api/control-all',{method:'POST',body:JSON.stringify({var:v,val})});
+  toast(`${v}=${val}: ${res.filter(r=>r.ok).length}/${res.length} kamera`);
+  refreshCams();
+}
+
+async function loadGallery(){
+  const files = await api('/api/captures?limit=60');
+  const g=document.getElementById('gallery');
+  g.innerHTML = files.length ? '' : '<p class="empty" style="padding:0">Belum ada foto.</p>';
+  for (const f of files){
+    const d=document.createElement('div'); d.className='shot';
+    const name=f.file.split('/').pop();
+    d.innerHTML=`<img loading="lazy" src="/captures/${f.file}"><div><span title="${name}">${f.cam} · ${new Date(f.mtime*1000).toLocaleTimeString()}</span>
+      <span><a href="/captures/${f.file}" download><button>⬇</button></a> <button>🗑</button></span></div>`;
+    d.querySelector('img').onclick=()=>window.open('/captures/'+f.file,'_blank');
+    d.querySelectorAll('button')[1].onclick=async()=>{ await fetch('/api/captures/'+f.file,{method:'DELETE'}); loadGallery(); };
+    g.appendChild(d);
+  }
+}
+
+async function loadSchedule(){
+  const s=await api('/api/schedule');
+  document.getElementById('schedEnabled').checked=s.enabled;
+  document.getElementById('schedInterval').value=s.interval;
+}
+async function saveSchedule(){
+  await api('/api/schedule',{method:'POST',body:JSON.stringify({
+    enabled:document.getElementById('schedEnabled').checked,
+    interval:+document.getElementById('schedInterval').value})});
+  toast('Jadwal auto-capture disimpan');
+}
+
+refreshCams(); loadGallery(); loadSchedule();
+setInterval(refreshCams, 5000);
+setInterval(loadGallery, 15000);
+</script>
+</body>
+</html>

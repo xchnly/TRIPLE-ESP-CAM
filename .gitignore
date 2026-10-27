@@ -1,0 +1,4 @@
+server/captures/
+__pycache__/
+*.pyc
+.venv/
