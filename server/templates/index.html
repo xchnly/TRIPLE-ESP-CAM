@@ -5,200 +5,614 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Triple ESP-CAM</title>
 <style>
-  :root { --bg:#0f1115; --card:#1a1d24; --line:#2a2f3a; --text:#e6e8ec; --muted:#8b92a1; --accent:#3b82f6; --ok:#22c55e; --bad:#ef4444; }
-  * { box-sizing:border-box; }
-  body { margin:0; font-family:system-ui,sans-serif; background:var(--bg); color:var(--text); }
-  header { display:flex; flex-wrap:wrap; gap:12px; align-items:center; justify-content:space-between; padding:14px 20px; border-bottom:1px solid var(--line); }
-  h1 { font-size:18px; margin:0; }
-  h2 { font-size:15px; margin:24px 20px 10px; color:var(--muted); font-weight:600; }
-  .bar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
-  button, select, input { background:var(--card); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:6px 10px; font-size:13px; }
-  button { cursor:pointer; }
-  button.primary { background:var(--accent); border-color:var(--accent); }
-  button:hover { filter:brightness(1.15); }
-  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:16px; padding:0 20px; }
-  .cam { background:var(--card); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
-  .cam-head { display:flex; justify-content:space-between; align-items:center; padding:10px 12px; }
-  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; }
-  .view { aspect-ratio:4/3; background:#000; display:flex; align-items:center; justify-content:center; color:var(--muted); font-size:13px; }
-  .view img { width:100%; height:100%; object-fit:contain; }
-  .meta { font-size:12px; color:var(--muted); padding:6px 12px; }
-  .controls { display:grid; grid-template-columns:1fr 1fr; gap:6px 10px; padding:8px 12px 12px; font-size:12px; }
-  .controls label { display:flex; flex-direction:column; gap:3px; color:var(--muted); }
-  .actions { display:flex; gap:6px; flex-wrap:wrap; padding:0 12px 12px; }
-  .gallery { display:grid; grid-template-columns:repeat(auto-fill,minmax(160px,1fr)); gap:10px; padding:0 20px 30px; }
-  .shot { background:var(--card); border:1px solid var(--line); border-radius:8px; overflow:hidden; font-size:11px; }
-  .shot img { width:100%; aspect-ratio:4/3; object-fit:cover; display:block; cursor:pointer; }
-  .shot div { display:flex; justify-content:space-between; align-items:center; padding:4px 6px; color:var(--muted); }
-  .shot button { padding:2px 6px; font-size:11px; }
-  #toast { position:fixed; bottom:16px; right:16px; background:var(--card); border:1px solid var(--line); padding:10px 14px; border-radius:8px; display:none; max-width:320px; font-size:13px; }
-  .empty { padding:0 20px; color:var(--muted); font-size:13px; }
-  @media (max-width:500px){ .grid,.gallery{padding:0 16px;} header{padding:12px 16px;} }
+  /* Semua aset inline: dashboard harus tetap jalan tanpa internet (mode hotspot ESP). */
+  :root {
+    --bg: #0a0a0b; --panel: #111113; --panel-2: #18181b; --line: #222226; --line-2: #2f2f35;
+    --text: #e6e6e1; --muted: #8a8a83; --dim: #56564f;
+    --accent: #f0a020; --accent-ink: #1c1406; --ok: #3ecf6e; --rec: #ff4b4b;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--text); font: 13px/1.4 var(--sans);
+         display: grid; grid-template-rows: 46px 1fr; overflow: hidden; }
+  button, select, input { font: inherit; color: inherit; }
+
+  /* ---------- top bar ---------- */
+  .top { display: flex; align-items: center; gap: 18px; padding: 0 14px;
+         border-bottom: 1px solid var(--line); background: var(--panel); }
+  .brand { font: 600 12px var(--mono); letter-spacing: .16em; }
+  .stat { font: 12px var(--mono); color: var(--muted); display: flex; align-items: center; gap: 7px; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); display: inline-block; flex: none; }
+  .dot.on { background: var(--ok); }
+  .dot.rec { background: var(--rec); animation: blink 1.6s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: .25; } }
+  .seg { display: flex; border: 1px solid var(--line-2); border-radius: 4px; overflow: hidden; }
+  .seg button { background: none; border: 0; padding: 4px 10px; color: var(--muted); cursor: pointer; font-size: 12px; }
+  .seg button + button { border-left: 1px solid var(--line-2); }
+  .seg button.on { background: var(--line-2); color: var(--text); }
+  .spacer { flex: 1; }
+  .clock { font: 12px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  .btn { background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 4px;
+         padding: 6px 11px; cursor: pointer; white-space: nowrap; }
+  .btn:hover { border-color: #47474e; }
+  a.btn { color: inherit; text-decoration: none; }
+  .btn:disabled { opacity: .4; cursor: default; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+  .btn.primary:hover { filter: brightness(1.08); }
+  .btn.on { border-color: var(--accent); color: var(--accent); }
+  kbd { font: 10px var(--mono); border: 1px solid currentColor; border-radius: 3px; padding: 0 4px; opacity: .55; margin-left: 6px; }
+
+  /* ---------- layout ---------- */
+  .main { display: grid; grid-template-columns: 1fr 340px; min-height: 0; }
+  .stage { position: relative; min-width: 0; min-height: 0; margin: 10px; }
+
+  .tile { position: absolute; background: #000; border: 1px solid var(--line); overflow: hidden; cursor: pointer;
+          transition: left .22s ease, top .22s ease, width .22s ease, height .22s ease, border-color .15s; }
+  .tile:hover { border-color: var(--line-2); }
+  .tile.sel { border-color: var(--accent); outline: 1px solid var(--accent); outline-offset: -2px; }
+  .tile img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .osd { position: absolute; left: 0; right: 0; display: flex; justify-content: space-between; gap: 10px;
+         padding: 8px 10px; font: 11px var(--mono); letter-spacing: .04em; color: #f4f4ef;
+         text-shadow: 0 1px 2px #000, 0 0 6px rgba(0,0,0,.6); pointer-events: none; white-space: nowrap; }
+  .osd.t { top: 0; } .osd.b { bottom: 0; }
+  .osd span { display: flex; align-items: center; gap: 6px; overflow: hidden; text-overflow: ellipsis; }
+  .nosig { position: absolute; inset: 0; display: grid; place-items: center; text-align: center;
+           font: 12px var(--mono); letter-spacing: .22em; color: var(--dim); }
+  .shutter { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; }
+  .shutter.go { animation: shut .4s ease-out; }
+  @keyframes shut { from { opacity: .8; } to { opacity: 0; } }
+  .tile.small .osd { padding: 5px 6px; font-size: 10px; }
+  .tile.small .osd.b { display: none; }
+
+  .empty { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; gap: 8px; color: var(--muted); }
+  .empty b { font: 600 12px var(--mono); letter-spacing: .2em; color: var(--text); }
+  .empty code { font: 12px var(--mono); color: var(--text); }
+
+  .toast { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 5;
+           background: var(--panel); border: 1px solid var(--line-2); border-radius: 4px; padding: 7px 12px;
+           font: 12px var(--mono); opacity: 0; transition: opacity .2s; pointer-events: none; white-space: nowrap; }
+  .toast.show { opacity: 1; }
+  .toast.err { border-color: var(--rec); color: #ffb3b3; }
+
+  /* ---------- sidebar ---------- */
+  .side { border-left: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; min-height: 0; }
+  .tabs { display: flex; border-bottom: 1px solid var(--line); }
+  .tabs button { flex: 1; background: none; border: 0; border-bottom: 2px solid transparent; padding: 11px 10px 9px;
+                 color: var(--muted); cursor: pointer; }
+  .tabs button.on { color: var(--text); border-bottom-color: var(--accent); }
+  .tabs small { font: 11px var(--mono); color: var(--dim); margin-left: 4px; }
+  .pane { flex: 1; overflow: auto; padding: 16px 14px; }
+  .pane[hidden] { display: none; }
+  .sec { margin-bottom: 26px; }
+  .sec h3 { display: flex; justify-content: space-between; align-items: baseline;
+            font: 600 11px var(--mono); letter-spacing: .14em; color: var(--muted); text-transform: uppercase; margin: 0 0 10px; }
+  .sec h3 span { letter-spacing: 0; text-transform: none; font-weight: 400; color: var(--dim); }
+  .name { font-size: 15px; font-weight: 600; margin: 0 0 2px; }
+  .sub { font: 12px var(--mono); color: var(--muted); margin-bottom: 12px; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 5px 12px; font: 12px var(--mono); margin: 0 0 14px; }
+  .kv dt { color: var(--muted); } .kv dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+  .row { display: flex; gap: 6px; flex-wrap: wrap; }
+  .row .btn { flex: 1; }
+  .field { display: grid; grid-template-columns: 82px 1fr 26px; align-items: center; gap: 10px; margin: 9px 0; }
+  .field label { color: var(--muted); }
+  .field output { font: 12px var(--mono); text-align: right; color: var(--text); }
+  .field.wide { grid-template-columns: 82px 1fr; }
+  input[type=range] { accent-color: var(--accent); width: 100%; margin: 0; }
+  input[type=checkbox] { accent-color: var(--accent); margin: 0; }
+  select, input[type=number] { background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 4px; padding: 5px 7px; width: 100%; }
+  .checks { display: flex; gap: 18px; margin-top: 10px; color: var(--muted); }
+  .checks label { display: flex; align-items: center; gap: 7px; cursor: pointer; }
+  .sched { display: grid; grid-template-columns: auto 70px auto; align-items: center; gap: 8px; color: var(--muted); }
+  .sched label { display: flex; align-items: center; gap: 7px; cursor: pointer; }
+  .muted { color: var(--muted); }
+  .hint { font: 11px var(--mono); color: var(--dim); padding: 9px 14px; border-top: 1px solid var(--line); line-height: 1.7; }
+
+  /* ---------- gallery ---------- */
+  .filter { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 14px; }
+  .filter button { background: none; border: 1px solid var(--line-2); border-radius: 3px; padding: 3px 8px;
+                   font: 11px var(--mono); color: var(--muted); cursor: pointer; }
+  .filter button.on { color: var(--accent); border-color: var(--accent); }
+  .batch { margin-bottom: 16px; }
+  .batch-h { display: flex; justify-content: space-between; font: 11px var(--mono); color: var(--muted); margin-bottom: 6px; }
+  .thumbs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+  .thumb { position: relative; aspect-ratio: 4/3; background: #000; cursor: pointer; border: 1px solid var(--line); padding: 0; }
+  .thumb:hover { border-color: var(--muted); }
+  .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .thumb span { position: absolute; left: 4px; bottom: 2px; font: 10px var(--mono); color: #fff; text-shadow: 0 1px 2px #000; }
+
+  /* ---------- lightbox ---------- */
+  .lb { position: fixed; inset: 0; background: rgba(6,6,7,.96); display: none; grid-template-rows: 1fr auto; z-index: 20; }
+  .lb.open { display: grid; }
+  .lb-img { min-height: 0; display: grid; place-items: center; padding: 16px; }
+  .lb-img img { max-width: 100%; max-height: 100%; object-fit: contain; }
+  .lb-bar { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-top: 1px solid var(--line); background: var(--panel); }
+  .lb-bar .meta { font: 12px var(--mono); color: var(--muted); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  @media (max-width: 900px) {
+    body { overflow: auto; grid-template-rows: auto auto; }
+    .top { flex-wrap: wrap; padding: 8px 16px; gap: 10px 14px; }
+    .clock { display: none; }
+    .main { grid-template-columns: 1fr; }
+    .stage { height: 62vh; margin: 8px 16px; }
+    .side { border-left: 0; border-top: 1px solid var(--line); }
+    .pane { overflow: visible; padding: 16px; }
+    .hint { display: none; }
+  }
 </style>
 </head>
 <body>
-<header>
-  <h1>📷 Triple ESP-CAM <span id="count" style="color:var(--muted);font-weight:400"></span></h1>
-  <div class="bar">
-    <button class="primary" onclick="captureAll()">Capture semua</button>
-    <button onclick="controlAll('flash',1)">Flash ON semua</button>
-    <button onclick="controlAll('flash',0)">Flash OFF semua</button>
-    <label style="font-size:13px;color:var(--muted)">
-      <input type="checkbox" id="schedEnabled" onchange="saveSchedule()"> Auto-capture tiap
-    </label>
-    <input type="number" id="schedInterval" min="5" value="60" style="width:70px" onchange="saveSchedule()"> detik
+
+<header class="top">
+  <div class="brand">TRIPLE-ESP-CAM</div>
+  <div class="stat"><i class="dot" id="netDot"></i><span id="netText">—</span></div>
+  <div class="seg" title="Live = stream MJPEG, Snapshot = foto diperbarui tiap 3 detik (lebih ringan)">
+    <button data-mode="live">Live</button><button data-mode="snap">Snapshot</button>
   </div>
+  <div class="spacer"></div>
+  <div class="clock" id="clock"></div>
+  <button class="btn primary" id="btnAll">Ambil semua<kbd>A</kbd></button>
 </header>
 
-<h2>Kamera</h2>
-<div class="grid" id="cams"></div>
-<p class="empty" id="noCams" style="display:none">Belum ada kamera terhubung. Pastikan SERVER_URL di config.h mengarah ke IP komputer ini.</p>
+<div class="main">
+  <section class="stage" id="stage">
+    <div class="empty" id="empty" hidden>
+      <b>MENUNGGU KAMERA</b>
+      <div>Belum ada ESP32-CAM yang terhubung.</div>
+      <div>Mode hotspot: sambungkan laptop ke WiFi <code>TRIPLE-ESP-CAM</code> dan jalankan <code>python app.py --hotspot</code></div>
+    </div>
+    <div class="toast" id="toast"></div>
+  </section>
 
-<h2>Galeri</h2>
-<div class="gallery" id="gallery"></div>
+  <aside class="side">
+    <nav class="tabs">
+      <button data-tab="cam" class="on">Kamera</button>
+      <button data-tab="gal">Galeri<small id="galCount"></small></button>
+    </nav>
 
-<div id="toast"></div>
+    <div class="pane" id="pane-cam">
+      <div class="sec" id="selSec">
+        <h3>Kamera terpilih</h3>
+        <p class="muted" id="selNone">Klik salah satu kamera.</p>
+        <div id="selBody" hidden>
+          <div class="name" id="sName"></div>
+          <div class="sub" id="sSub"></div>
+          <dl class="kv">
+            <dt>Status</dt><dd id="sStatus"></dd>
+            <dt>Sinyal</dt><dd id="sRssi"></dd>
+            <dt>Uptime</dt><dd id="sUptime"></dd>
+            <dt>RAM bebas</dt><dd id="sHeap"></dd>
+          </dl>
+          <div class="row">
+            <button class="btn primary" id="sCapture">Ambil foto<kbd>C</kbd></button>
+            <button class="btn" id="sFlash">Flash</button>
+            <button class="btn" id="sFocus">Perbesar<kbd>F</kbd></button>
+          </div>
+        </div>
+      </div>
+
+      <div class="sec" id="setSec" hidden>
+        <h3>Gambar <span>khusus kamera ini</span></h3>
+        <div class="field wide"><label>Resolusi</label>
+          <select data-var="framesize">
+            <option value="5">QVGA 320×240</option>
+            <option value="8">VGA 640×480</option>
+            <option value="9">SVGA 800×600</option>
+            <option value="10">XGA 1024×768</option>
+            <option value="11">HD 1280×720</option>
+            <option value="12">SXGA 1280×1024</option>
+            <option value="13">UXGA 1600×1200</option>
+          </select>
+        </div>
+        <div class="field"><label>Kompresi</label><input type="range" min="4" max="63" data-var="quality"><output></output></div>
+        <div class="field"><label>Brightness</label><input type="range" min="-2" max="2" data-var="brightness"><output></output></div>
+        <div class="field"><label>Contrast</label><input type="range" min="-2" max="2" data-var="contrast"><output></output></div>
+        <div class="field"><label>Saturation</label><input type="range" min="-2" max="2" data-var="saturation"><output></output></div>
+        <div class="checks">
+          <label><input type="checkbox" data-var="vflip"> Balik vertikal</label>
+          <label><input type="checkbox" data-var="hmirror"> Mirror</label>
+        </div>
+      </div>
+
+      <div class="sec">
+        <h3>Semua kamera</h3>
+        <div class="row" style="margin-bottom:14px">
+          <button class="btn" id="flashOn">Flash nyala</button>
+          <button class="btn" id="flashOff">Flash mati</button>
+        </div>
+        <div class="sched">
+          <label><input type="checkbox" id="schedOn"> Ambil otomatis tiap</label>
+          <input type="number" id="schedInt" min="5" value="60">
+          <span>detik</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="pane" id="pane-gal" hidden>
+      <div class="filter" id="galFilter"></div>
+      <div id="galList"></div>
+    </div>
+
+    <div class="hint">1–9 pilih kamera · F perbesar · Esc kembali<br>C ambil foto kamera terpilih · A ambil semua</div>
+  </aside>
+</div>
+
+<div class="lb" id="lb">
+  <div class="lb-img"><img id="lbImg" alt=""></div>
+  <div class="lb-bar">
+    <button class="btn" id="lbPrev">←</button>
+    <button class="btn" id="lbNext">→</button>
+    <div class="meta" id="lbMeta"></div>
+    <a class="btn" id="lbDl" download>Unduh</a>
+    <button class="btn" id="lbDel">Hapus</button>
+    <button class="btn" id="lbClose">Tutup<kbd>Esc</kbd></button>
+  </div>
+</div>
 
 <script>
-const FRAMESIZES = {5:"QVGA 320x240",8:"VGA 640x480",9:"SVGA 800x600",10:"XGA 1024x768",11:"HD 1280x720",12:"SXGA 1280x1024",13:"UXGA 1600x1200"};
-const streaming = {};   // cam_id -> bool
-const rendered = {};    // cam_id -> element
+const $ = s => document.querySelector(s);
+const FS_LABEL = {5:"QVGA",8:"VGA",9:"SVGA",10:"XGA",11:"HD",12:"SXGA",13:"UXGA"};
 
-function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg; t.style.display='block'; clearTimeout(t._h); t._h=setTimeout(()=>t.style.display='none',3000); }
-async function api(url, opts={}){ const r=await fetch(url,{headers:{'Content-Type':'application/json'},...opts}); return r.json(); }
+const state = {
+  cams: [],                       // dari /api/cameras
+  sel: null,                      // id kamera terpilih
+  focus: null,                    // id kamera yang diperbesar
+  mode: localGet('mode') || 'live',
+  gallery: [], galFilter: 'all', lbIndex: -1,
+};
+const tiles = {};                 // id -> { el, img, ... }
 
-function camCard(c){
-  const el=document.createElement('div'); el.className='cam'; el.id='cam-'+c.id;
-  const fs=Object.entries(FRAMESIZES).map(([v,n])=>`<option value="${v}">${n}</option>`).join('');
-  el.innerHTML=`
-    <div class="cam-head"><strong><span class="dot"></span><span class="name"></span></strong><small class="cid" style="color:var(--muted)"></small></div>
-    <div class="view"><span>Stream mati</span></div>
-    <div class="meta"></div>
-    <div class="actions">
-      <button class="primary" data-act="capture">Capture</button>
-      <button data-act="stream">Start stream</button>
-      <button data-act="snapshot">Snapshot</button>
-      <button data-act="flash">Flash</button>
-    </div>
-    <div class="controls">
-      <label>Resolusi<select data-var="framesize">${fs}</select></label>
-      <label>Kualitas (10=bagus)<input type="range" min="4" max="63" data-var="quality"></label>
-      <label>Brightness<input type="range" min="-2" max="2" data-var="brightness"></label>
-      <label>Contrast<input type="range" min="-2" max="2" data-var="contrast"></label>
-      <label>Saturation<input type="range" min="-2" max="2" data-var="saturation"></label>
-      <label style="flex-direction:row;gap:12px;align-items:center">
-        <span><input type="checkbox" data-var="vflip"> V-flip</span>
-        <span><input type="checkbox" data-var="hmirror"> Mirror</span>
-      </label>
-    </div>`;
-  el.querySelectorAll('[data-var]').forEach(inp=>inp.addEventListener('change',()=>{
-    const val = inp.type==='checkbox' ? (inp.checked?1:0) : inp.value;
-    control(c.id, inp.dataset.var, val);
-  }));
-  el.querySelector('[data-act=capture]').onclick=()=>capture(c.id);
-  el.querySelector('[data-act=stream]').onclick=()=>toggleStream(c.id);
-  el.querySelector('[data-act=snapshot]').onclick=()=>snapshot(c.id);
-  el.querySelector('[data-act=flash]').onclick=()=>control(c.id,'flash',rendered[c.id]._flash?0:1);
-  return el;
+function localGet(k){ try { return localStorage.getItem('tec.'+k); } catch { return null; } }
+function localSet(k,v){ try { localStorage.setItem('tec.'+k, v); } catch {} }
+
+async function api(url, opts = {}) {
+  const r = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...opts });
+  return r.json();
 }
 
-function updateCard(el,c){
-  el.querySelector('.dot').style.background = c.online?'var(--ok)':'var(--bad)';
-  el.querySelector('.name').textContent = c.name||c.id;
-  el.querySelector('.cid').textContent = c.id+' · '+c.ip;
-  el.querySelector('.meta').textContent = c.online
-    ? `RSSI ${c.rssi??'-'} dBm · uptime ${fmtUptime(c.uptime)} · heap ${c.heap?Math.round(c.heap/1024)+'KB':'-'}`
-    : 'OFFLINE';
-  el._flash = !!c.flash;
-  el.querySelector('[data-act=flash]').textContent = c.flash?'Flash OFF':'Flash ON';
-  el.querySelectorAll('[data-var]').forEach(inp=>{
-    if (document.activeElement===inp || c[inp.dataset.var]===undefined) return;
-    if (inp.type==='checkbox') inp.checked=!!c[inp.dataset.var]; else inp.value=c[inp.dataset.var];
+let toastTimer;
+function toast(msg, err = false) {
+  const t = $('#toast');
+  t.textContent = msg; t.classList.toggle('err', err); t.classList.add('show');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
+}
+
+const camById = id => state.cams.find(c => c.id === id);
+const fmtUptime = s => s == null ? '—' : s >= 86400 ? `${Math.floor(s/86400)}h ${Math.floor(s%86400/3600)}j`
+  : s >= 3600 ? `${Math.floor(s/3600)}j ${Math.floor(s%3600/60)}m` : `${Math.floor(s/60)}m ${s%60}d`;
+function fmtRssi(r) {
+  if (!r) return '—';
+  const q = r >= -55 ? 'kuat' : r >= -70 ? 'sedang' : 'lemah';
+  return `${r} dBm · ${q}`;
+}
+
+/* ================= tiles & stream ================= */
+function makeTile(c) {
+  const el = document.createElement('div');
+  el.className = 'tile';
+  el.innerHTML = `
+    <img alt="">
+    <div class="nosig">NO SIGNAL</div>
+    <div class="osd t"><span class="o-name"></span><span class="o-state"></span></div>
+    <div class="osd b"><span class="o-res"></span><span class="o-time"></span></div>
+    <div class="shutter"></div>`;
+  el.onclick = () => select(c.id);
+  el.ondblclick = () => toggleFocus(c.id);
+  $('#stage').appendChild(el);
+  const t = { el, img: el.querySelector('img'), nosig: el.querySelector('.nosig'), src: null, retry: null };
+  t.img.onerror = () => { t.src = null; clearTimeout(t.retry); t.retry = setTimeout(() => syncFeed(c.id), 3000); };
+  t.img.onload = () => { if (state.mode === 'snap') { clearTimeout(t.retry); t.retry = setTimeout(() => syncFeed(c.id, true), 3000); } };
+  return t;
+}
+
+// Pasang/lepas sumber gambar sesuai status online, mode, dan visibilitas tab.
+function syncFeed(id, refresh = false) {
+  const t = tiles[id], c = camById(id);
+  if (!t) return;
+  const want = c && c.online && !document.hidden;
+  t.nosig.hidden = !!(c && c.online);
+  if (!want) { if (t.src) { t.img.removeAttribute('src'); t.src = null; } return; }
+  const key = state.mode;
+  if (t.src === key && !refresh) return;
+  t.src = key;
+  t.img.src = key === 'live' ? `/api/stream/${id}?t=${Date.now()}` : `/api/snapshot/${id}?t=${Date.now()}`;
+}
+
+function updateTile(c) {
+  const t = tiles[c.id], el = t.el;
+  el.classList.toggle('sel', state.sel === c.id);
+  el.querySelector('.o-name').textContent = `${c.id.toUpperCase()}  ${c.name && c.name !== c.id ? c.name : ''}`;
+  el.querySelector('.o-state').innerHTML = c.online
+    ? `<i class="dot ${state.mode === 'live' ? 'rec' : 'on'}"></i>${state.mode === 'live' ? 'LIVE' : 'SNAP'}`
+    : `<i class="dot"></i>OFFLINE`;
+  el.querySelector('.o-res').textContent = c.online
+    ? `${FS_LABEL[c.framesize] || ''}${c.rssi ? '  ' + c.rssi + 'dBm' : ''}${c.flash ? '  FLASH' : ''}` : c.ip || '';
+}
+
+/* ---- layout: isi area stage sepenuhnya dengan tile 4:3 ---- */
+function place(id, x, y, w, h, small) {
+  const el = tiles[id].el;
+  Object.assign(el.style, { left: x + 'px', top: y + 'px', width: w + 'px', height: h + 'px' });
+  el.classList.toggle('small', !!small);
+}
+
+function layout() {
+  const stage = $('#stage'), W = stage.clientWidth, H = stage.clientHeight, gap = 8;
+  const ids = state.cams.map(c => c.id);
+  $('#empty').hidden = ids.length > 0;
+  if (!ids.length || !W || !H) return;
+
+  if (state.focus && ids.includes(state.focus) && ids.length > 1) {
+    const others = ids.filter(i => i !== state.focus);
+    const stripH = Math.max(70, Math.min(150, H * .2));
+    const mainH = H - stripH - gap;
+    place(state.focus, 0, 0, W, mainH);
+    let tw = stripH * 4 / 3;
+    tw = Math.min(tw, (W - gap * (others.length - 1)) / others.length);
+    const th = tw * 3 / 4, x0 = (W - (tw * others.length + gap * (others.length - 1))) / 2;
+    others.forEach((id, i) => place(id, x0 + i * (tw + gap), mainH + gap + (stripH - th) / 2, tw, th, true));
+    return;
+  }
+
+  // Cari jumlah kolom yang menghasilkan tile terbesar.
+  const n = ids.length;
+  let best = { tw: 0 };
+  for (let cols = 1; cols <= n; cols++) {
+    const rows = Math.ceil(n / cols);
+    const tw = Math.min((W - gap * (cols - 1)) / cols, ((H - gap * (rows - 1)) / rows) * 4 / 3);
+    if (tw > best.tw) best = { tw, cols, rows };
+  }
+  const { tw, cols, rows } = best, th = tw * 3 / 4;
+  const y0 = (H - (th * rows + gap * (rows - 1))) / 2;
+  ids.forEach((id, i) => {
+    const r = Math.floor(i / cols), inRow = Math.min(cols, n - r * cols), col = i % cols;
+    const x0 = (W - (tw * inRow + gap * (inRow - 1))) / 2;
+    place(id, x0 + col * (tw + gap), y0 + r * (th + gap), tw, th, tw < 260);
   });
 }
 
-function fmtUptime(s){ if(s==null) return '-'; const h=Math.floor(s/3600),m=Math.floor(s%3600/60); return h?`${h}j ${m}m`:`${m}m ${s%60}d`; }
+/* ================= kamera ================= */
+async function refreshCams() {
+  let cams;
+  try { cams = await api('/api/cameras'); } catch { $('#netText').textContent = 'server terputus'; $('#netDot').className = 'dot'; return; }
+  state.cams = cams;
+  const online = cams.filter(c => c.online).length;
+  $('#netText').textContent = `${online}/${cams.length} online`;
+  $('#netDot').className = 'dot' + (online ? ' on' : '');
 
-async function refreshCams(){
-  const cams = await api('/api/cameras');
-  document.getElementById('count').textContent = `(${cams.filter(c=>c.online).length}/${cams.length} online)`;
-  document.getElementById('noCams').style.display = cams.length?'none':'block';
-  const grid=document.getElementById('cams');
-  for (const c of cams){
-    if (!rendered[c.id]){ rendered[c.id]=camCard(c); grid.appendChild(rendered[c.id]); }
-    updateCard(rendered[c.id],c);
+  for (const c of cams) {
+    if (!tiles[c.id]) tiles[c.id] = makeTile(c);
+    updateTile(c);
+    syncFeed(c.id);
   }
+  for (const id of Object.keys(tiles)) {
+    if (!camById(id)) { tiles[id].el.remove(); delete tiles[id]; }
+  }
+  if (!state.sel && cams.length) state.sel = cams[0].id;
+  if (state.sel && !camById(state.sel)) state.sel = null;
+  layout();
+  renderSelected();
 }
 
-function toggleStream(id){
-  const el=rendered[id], view=el.querySelector('.view'), btn=el.querySelector('[data-act=stream]');
-  streaming[id]=!streaming[id];
-  if (streaming[id]){ view.innerHTML=`<img src="/api/stream/${id}?t=${Date.now()}">`; btn.textContent='Stop stream'; }
-  else { view.innerHTML='<span>Stream mati</span>'; btn.textContent='Start stream'; }
+function select(id) {
+  state.sel = id;
+  state.cams.forEach(updateTile);
+  renderSelected(true);
 }
 
-function snapshot(id){
-  const el=rendered[id];
-  if (streaming[id]) toggleStream(id);
-  el.querySelector('.view').innerHTML=`<img src="/api/snapshot/${id}?t=${Date.now()}">`;
+function setFocus(id) {
+  state.focus = id;
+  if (id) select(id); else renderSelected();
+  layout();
+}
+const toggleFocus = (id = state.sel) => id && setFocus(state.focus === id ? null : id);
+
+function renderSelected(force = false) {
+  const c = camById(state.sel);
+  $('#selNone').hidden = !!c; $('#selBody').hidden = !c; $('#setSec').hidden = !c;
+  if (!c) return;
+  $('#sName').textContent = c.name || c.id;
+  $('#sSub').textContent = `${c.id} · ${c.ip}`;
+  $('#sStatus').innerHTML = c.online ? '<span style="color:var(--ok)">online</span>' : '<span style="color:var(--rec)">offline</span>';
+  $('#sRssi').textContent = c.online ? fmtRssi(c.rssi) : '—';
+  $('#sUptime').textContent = c.online ? fmtUptime(c.uptime) : '—';
+  $('#sHeap').textContent = c.online && c.heap ? Math.round(c.heap / 1024) + ' KB' : '—';
+  $('#sFlash').textContent = c.flash ? 'Flash mati' : 'Flash nyala';
+  $('#sFlash').classList.toggle('on', !!c.flash);
+  $('#sFocus').firstChild.textContent = state.focus === c.id ? 'Kecilkan' : 'Perbesar';
+  for (const b of ['#sCapture', '#sFlash']) $(b).disabled = !c.online;
+
+  document.querySelectorAll('#setSec [data-var]').forEach(inp => {
+    const v = c[inp.dataset.var];
+    inp.disabled = !c.online;
+    if (v === undefined || (!force && document.activeElement === inp)) return;
+    if (inp.type === 'checkbox') inp.checked = !!v; else inp.value = v;
+    const out = inp.parentElement.querySelector('output');
+    if (out) out.textContent = v;
+  });
 }
 
-async function capture(id){
-  toast(`Mengambil foto ${id}...`);
-  const r = await api(`/api/capture/${id}`,{method:'POST'});
-  toast(r.ok?`✔ ${r.file} (${Math.round(r.size/1024)} KB)`:`✘ ${id}: ${r.error}`);
+function shutter(id) {
+  const s = tiles[id]?.el.querySelector('.shutter');
+  if (!s) return;
+  s.classList.remove('go'); void s.offsetWidth; s.classList.add('go');
+}
+
+async function capture(id = state.sel) {
+  const c = camById(id);
+  if (!c || !c.online) return;
+  shutter(id);
+  const r = await api(`/api/capture/${id}`, { method: 'POST' });
+  r.ok ? toast(`${id}  tersimpan  ${Math.round(r.size / 1024)} KB`) : toast(`${id}  gagal: ${r.error}`, true);
   loadGallery();
 }
 
-async function captureAll(){
-  toast('Capture semua kamera...');
-  const res = await api('/api/capture-all',{method:'POST'});
-  const ok=res.filter(r=>r.ok).length;
-  toast(`✔ ${ok}/${res.length} kamera berhasil`+(res.some(r=>!r.ok)?' — gagal: '+res.filter(r=>!r.ok).map(r=>r.id).join(', '):''));
+async function captureAll() {
+  const online = state.cams.filter(c => c.online);
+  if (!online.length) return toast('Tidak ada kamera online', true);
+  online.forEach(c => shutter(c.id));
+  $('#btnAll').disabled = true;
+  try {
+    const res = await api('/api/capture-all', { method: 'POST' });
+    const bad = res.filter(r => !r.ok);
+    toast(`${res.length - bad.length}/${res.length} kamera tersimpan` + (bad.length ? `  · gagal: ${bad.map(r => r.id).join(', ')}` : ''), bad.length > 0);
+  } finally { $('#btnAll').disabled = false; }
   loadGallery();
 }
 
-async function control(id,v,val){
-  const r = await api(`/api/control/${id}`,{method:'POST',body:JSON.stringify({var:v,val})});
-  if (r.error) toast(`✘ ${id}: ${r.error}`); else updateCard(rendered[id],{...r,online:true});
+async function control(id, v, val) {
+  const r = await api(`/api/control/${id}`, { method: 'POST', body: JSON.stringify({ var: v, val }) });
+  if (r.error) return toast(`${id}  ${r.error}`, true);
+  Object.assign(camById(id) || {}, r);
+  updateTile(camById(id)); renderSelected();
 }
 
-async function controlAll(v,val){
-  const res = await api('/api/control-all',{method:'POST',body:JSON.stringify({var:v,val})});
-  toast(`${v}=${val}: ${res.filter(r=>r.ok).length}/${res.length} kamera`);
+async function controlAll(v, val) {
+  const res = await api('/api/control-all', { method: 'POST', body: JSON.stringify({ var: v, val }) });
+  toast(`flash ${val ? 'nyala' : 'mati'}  ${res.filter(r => r.ok).length}/${res.length} kamera`);
   refreshCams();
 }
 
-async function loadGallery(){
-  const files = await api('/api/captures?limit=60');
-  const g=document.getElementById('gallery');
-  g.innerHTML = files.length ? '' : '<p class="empty" style="padding:0">Belum ada foto.</p>';
-  for (const f of files){
-    const d=document.createElement('div'); d.className='shot';
-    const name=f.file.split('/').pop();
-    d.innerHTML=`<img loading="lazy" src="/captures/${f.file}"><div><span title="${name}">${f.cam} · ${new Date(f.mtime*1000).toLocaleTimeString()}</span>
-      <span><a href="/captures/${f.file}" download><button>⬇</button></a> <button>🗑</button></span></div>`;
-    d.querySelector('img').onclick=()=>window.open('/captures/'+f.file,'_blank');
-    d.querySelectorAll('button')[1].onclick=async()=>{ await fetch('/api/captures/'+f.file,{method:'DELETE'}); loadGallery(); };
-    g.appendChild(d);
+/* ================= galeri ================= */
+async function loadGallery() {
+  state.gallery = await api('/api/captures?limit=150');
+  $('#galCount').textContent = state.gallery.length ? ` ${state.gallery.length}` : '';
+  renderGallery();
+}
+
+const visibleShots = () => state.gallery.filter(f => state.galFilter === 'all' || f.cam === state.galFilter);
+
+function renderGallery() {
+  const cams = [...new Set(state.gallery.map(f => f.cam))].sort();
+  $('#galFilter').innerHTML = ['all', ...cams].map(c =>
+    `<button data-f="${c}" class="${state.galFilter === c ? 'on' : ''}">${c === 'all' ? 'semua' : c}</button>`).join('');
+
+  const shots = visibleShots();
+  if (!shots.length) { $('#galList').innerHTML = '<p class="muted">Belum ada foto.</p>'; return; }
+
+  // Kelompokkan per waktu ambil (YYYYMMDD_HHMMSS) supaya hasil "ambil semua" tampil sebaris.
+  const groups = [];
+  shots.forEach((f, i) => {
+    const key = f.file.split('/').pop().slice(0, 15);
+    let g = groups[groups.length - 1];
+    if (!g || g.key !== key) groups.push(g = { key, mtime: f.mtime, items: [] });
+    g.items.push({ ...f, i });
+  });
+  groups.forEach(g => g.items.sort((a, b) => a.cam.localeCompare(b.cam)));
+  $('#galList').innerHTML = groups.map(g => `
+    <div class="batch">
+      <div class="batch-h"><span>${new Date(g.mtime * 1000).toLocaleString('id-ID', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span><span>${g.items.length} foto</span></div>
+      <div class="thumbs">${g.items.map(f => `<button class="thumb" data-i="${f.i}"><img loading="lazy" src="/captures/${f.file}" alt=""><span>${f.cam}</span></button>`).join('')}</div>
+    </div>`).join('');
+}
+
+function openLb(i) {
+  const shots = visibleShots();
+  if (!shots.length) return closeLb();
+  state.lbIndex = (i + shots.length) % shots.length;
+  const f = shots[state.lbIndex];
+  $('#lbImg').src = '/captures/' + f.file;
+  $('#lbDl').href = '/captures/' + f.file;
+  $('#lbMeta').textContent = `${state.lbIndex + 1}/${shots.length}   ${f.file}   ${new Date(f.mtime * 1000).toLocaleString('id-ID')}`;
+  $('#lb').classList.add('open');
+}
+function closeLb() { $('#lb').classList.remove('open'); state.lbIndex = -1; }
+
+async function deleteCurrent() {
+  const f = visibleShots()[state.lbIndex];
+  if (!f) return;
+  await fetch('/api/captures/' + f.file, { method: 'DELETE' });
+  await loadGallery();
+  openLb(state.lbIndex);
+}
+
+/* ================= jadwal ================= */
+async function loadSchedule() {
+  const s = await api('/api/schedule');
+  $('#schedOn').checked = s.enabled; $('#schedInt').value = s.interval;
+}
+async function saveSchedule() {
+  const s = await api('/api/schedule', { method: 'POST', body: JSON.stringify({ enabled: $('#schedOn').checked, interval: +$('#schedInt').value }) });
+  $('#schedInt').value = s.interval;
+  toast(s.enabled ? `ambil otomatis tiap ${s.interval} detik` : 'ambil otomatis mati');
+}
+
+/* ================= event ================= */
+function setMode(m) {
+  state.mode = m; localSet('mode', m);
+  document.querySelectorAll('.seg button').forEach(b => b.classList.toggle('on', b.dataset.mode === m));
+  Object.values(tiles).forEach(t => { clearTimeout(t.retry); t.src = null; });
+  state.cams.forEach(c => { updateTile(c); syncFeed(c.id); });
+}
+document.querySelectorAll('.seg button').forEach(b => b.onclick = () => setMode(b.dataset.mode));
+
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x === b));
+  $('#pane-cam').hidden = b.dataset.tab !== 'cam';
+  $('#pane-gal').hidden = b.dataset.tab !== 'gal';
+});
+
+document.querySelectorAll('#setSec [data-var]').forEach(inp => {
+  const out = inp.parentElement.querySelector('output');
+  inp.addEventListener('input', () => { if (out) out.textContent = inp.value; });
+  inp.addEventListener('change', () => control(state.sel, inp.dataset.var, inp.type === 'checkbox' ? (inp.checked ? 1 : 0) : inp.value));
+});
+
+$('#btnAll').onclick = captureAll;
+$('#sCapture').onclick = () => capture();
+$('#sFlash').onclick = () => { const c = camById(state.sel); if (c) control(c.id, 'flash', c.flash ? 0 : 1); };
+$('#sFocus').onclick = () => toggleFocus();
+$('#flashOn').onclick = () => controlAll('flash', 1);
+$('#flashOff').onclick = () => controlAll('flash', 0);
+$('#schedOn').onchange = saveSchedule;
+$('#schedInt').onchange = saveSchedule;
+
+$('#galFilter').onclick = e => { const b = e.target.closest('button'); if (b) { state.galFilter = b.dataset.f; renderGallery(); } };
+$('#galList').onclick = e => { const b = e.target.closest('.thumb'); if (b) openLb(+b.dataset.i); };
+$('#lbPrev').onclick = () => openLb(state.lbIndex - 1);
+$('#lbNext').onclick = () => openLb(state.lbIndex + 1);
+$('#lbClose').onclick = closeLb;
+$('#lbDel').onclick = deleteCurrent;
+$('#lb').onclick = e => { if (e.target.classList.contains('lb-img')) closeLb(); };
+
+document.addEventListener('keydown', e => {
+  if (e.target.matches('input, select, textarea')) return;
+  if ($('#lb').classList.contains('open')) {
+    if (e.key === 'Escape') closeLb();
+    else if (e.key === 'ArrowLeft') openLb(state.lbIndex - 1);
+    else if (e.key === 'ArrowRight') openLb(state.lbIndex + 1);
+    return;
   }
+  const k = e.key.toLowerCase();
+  if (/^[1-9]$/.test(k) && state.cams[+k - 1]) {
+    const id = state.cams[+k - 1].id;
+    if (state.focus) setFocus(id); else select(id);
+  }
+  else if (k === 'f') toggleFocus();
+  else if (k === 'escape' && state.focus) setFocus(null);
+  else if (k === 'c') capture();
+  else if (k === 'a') captureAll();
+  else return;
+  e.preventDefault();
+});
+
+document.addEventListener('visibilitychange', () => state.cams.forEach(c => syncFeed(c.id)));
+new ResizeObserver(layout).observe($('#stage'));
+
+function tick() {
+  $('#clock').textContent = new Date().toLocaleString('id-ID', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const now = new Date().toLocaleTimeString('id-ID');
+  document.querySelectorAll('.o-time').forEach(s => s.textContent = now);
 }
 
-async function loadSchedule(){
-  const s=await api('/api/schedule');
-  document.getElementById('schedEnabled').checked=s.enabled;
-  document.getElementById('schedInterval').value=s.interval;
-}
-async function saveSchedule(){
-  await api('/api/schedule',{method:'POST',body:JSON.stringify({
-    enabled:document.getElementById('schedEnabled').checked,
-    interval:+document.getElementById('schedInterval').value})});
-  toast('Jadwal auto-capture disimpan');
-}
-
-refreshCams(); loadGallery(); loadSchedule();
-setInterval(refreshCams, 5000);
+setMode(state.mode);
+refreshCams(); loadGallery(); loadSchedule(); tick();
+setInterval(refreshCams, 3000);
 setInterval(loadGallery, 15000);
+setInterval(tick, 1000);
 </script>
 </body>
 </html>
