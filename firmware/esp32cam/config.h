@@ -2,27 +2,34 @@
 
 // ====================================================================
 //  KONFIGURASI PER NODE
-//  Untuk tiap board cukup ganti CAM_NUMBER (1, 2, 3) dan CAM_NAME
+//  Untuk tiap board cukup ganti CAM_NUMBER (1, 2, 3, ...) dan CAM_NAME
 //  sebelum upload.
 // ====================================================================
 
 #define CAM_NUMBER     1               // 1 / 2 / 3  -> id jadi cam1 / cam2 / cam3
-#define CAM_NAME       "Kamera 1"      // nama bebas untuk ditampilkan di web
+#define CAM_NAME       "Pos 1"         // nama bebas untuk ditampilkan di web & aplikasi
 
 // --------------------------------------------------------------------
 //  MODE JARINGAN
-//   1 = WiFi dari ESP sendiri (tanpa router):
-//       cam1 memancarkan hotspot, cam2/cam3 + laptop connect ke hotspot itu.
-//       IP tetap: cam1 = 192.168.4.1, cam2 = 192.168.4.202, cam3 = 192.168.4.203
-//       Server dijalankan dengan:  python app.py --hotspot
-//   0 = Pakai router / hotspot HP (WIFI_SSID di bawah).
+//   1 = Offline penuh (default). SETIAP node memancarkan WiFi sendiri untuk HP:
+//         cam1 -> "MeshLokal-cam1" (192.168.4.1)
+//         camN -> "MeshLokal-camN" (192.168.(10+N).1)
+//       Antar node saling meneruskan pesan lewat ESP-NOW, jadi jangkauan
+//       bertambah setiap ada node baru (tidak perlu saling tersambung WiFi).
+//       Laptop dashboard: connect ke "MeshLokal-cam1", jalankan  python app.py --hotspot
+//   0 = Pakai router / hotspot HP (WIFI_SSID di bawah). ESP-NOW tetap jalan.
 // --------------------------------------------------------------------
 #define USE_ESP_HOTSPOT  1
 
-// --- Mode 1: hotspot dari ESP (cam1) ---
-#define AP_SSID        "TRIPLE-ESP-CAM"
-#define AP_PASSWORD    "12345678"      // minimal 8 karakter
-#define AP_CHANNEL     6
+// --- Mode 1 ---
+#define AP_SSID_PREFIX "MeshLokal-cam" // SSID = prefix + CAM_NUMBER
+#define AP_PASSWORD    "12345678"      // minimal 8 karakter, sama untuk semua node
+#define AP_CHANNEL     6               // HARUS sama di semua node (syarat ESP-NOW)
+
+// cam2, cam3, ... juga ikut tersambung ke WiFi cam1 (IP 192.168.4.20N) bila
+// terjangkau. Ini membuat dashboard laptop & kamera node lain bisa dilihat dari
+// satu tempat. Set 0 bila node jauh dari cam1 (lebih hemat & stabil).
+#define JOIN_CAM1_WIFI 1
 
 // --- Mode 0: router / hotspot HP ---
 #define WIFI_SSID      "NAMA_WIFI_ANDA"

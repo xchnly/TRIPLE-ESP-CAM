@@ -11,9 +11,10 @@ Fungsi:
 Jalankan:
     pip install -r requirements.txt
     python app.py            # mode router: buka http://<ip-komputer>:5000
-    python app.py --hotspot  # mode WiFi dari ESP (laptop connect ke hotspot cam1)
+    python app.py --hotspot  # mode offline (laptop connect ke WiFi "MeshLokal-cam1")
 """
 
+import json
 import os
 import sys
 import threading
@@ -289,6 +290,91 @@ def _scheduler_loop():
 
 
 # ----------------------------------------------------------------------
+# MeshLokal: dashboard "basecamp" (SOS & orang aktif dari aplikasi HP)
+# ----------------------------------------------------------------------
+# Server menarik pesan dari node lewat /mesh/pull. Chat terenkripsi tidak bisa
+# dibaca di sini; yang ditampilkan hanya SOS (sengaja terbuka) dan pengumuman
+# "hello" (nama, jumlah hop, lokasi bila user mengizinkan).
+# Catatan: tanda tangan pesan tidak diverifikasi server ini (verifikasi ada di HP).
+mesh_lock = threading.Lock()
+mesh_cursor = {}              # cam_id -> (boot, seq)
+mesh_seen = set()
+mesh_sos = {}                 # id -> dict
+mesh_people = {}              # pub -> dict
+mesh_nodes = {}               # cam_id -> /mesh/info
+mesh_stats = {"messages": 0, "chat": 0}
+TTL_START = {"hello": 6, "sos": 15}
+
+
+def _mesh_ingest(msg, via):
+    mid = msg.get("id")
+    if not isinstance(mid, str) or mid in mesh_seen:
+        return
+    mesh_seen.add(mid)
+    mesh_stats["messages"] += 1
+    t = msg.get("t")
+    hops = max(1, TTL_START.get(t, 8) - int(msg.get("ttl", 0)) + 1)
+    try:
+        body = json.loads(msg.get("body", "")) if t in ("hello", "sos") else {}
+    except ValueError:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    if t == "sos":
+        mesh_sos[mid] = {
+            "id": mid, "from": msg.get("from"), "name": str(body.get("n", "?"))[:32],
+            "lat": body.get("lat"), "lon": body.get("lon"), "acc": body.get("acc"),
+            "msg": str(body.get("msg", ""))[:200], "ts": msg.get("ts"), "hops": hops,
+            "via": via, "received": time.time(),
+        }
+    elif t == "hello":
+        loc = body.get("loc")
+        prev = mesh_people.get(msg.get("from"), {})
+        mesh_people[msg.get("from")] = {
+            "pub": msg.get("from"), "name": str(body.get("n", "?"))[:32], "hops": hops, "via": via,
+            "last_seen": time.time(),
+            "lat": loc[0] if isinstance(loc, list) and len(loc) >= 2 else prev.get("lat"),
+            "lon": loc[1] if isinstance(loc, list) and len(loc) >= 2 else prev.get("lon"),
+        }
+    elif t in ("dm", "chan"):
+        mesh_stats["chat"] += 1
+
+
+def _mesh_poll_loop():
+    while True:
+        for cam in [c for c in _cam_snapshot() if c["online"]]:
+            boot, seq = mesh_cursor.get(cam["id"], (-1, 0))
+            try:
+                r = requests.get(f"http://{cam['ip']}/mesh/pull", params={"boot": boot, "since": seq}, timeout=4)
+                data = r.json()
+                info = requests.get(f"http://{cam['ip']}/mesh/info", timeout=3).json()
+            except (requests.RequestException, ValueError):
+                continue  # firmware lama tanpa mesh, atau node sibuk
+            with mesh_lock:
+                if data.get("boot") != boot:
+                    seq = 0
+                mesh_cursor[cam["id"]] = (data.get("boot"), data.get("seq", seq))
+                mesh_nodes[cam["id"]] = info
+                for m in data.get("msgs", []):
+                    if isinstance(m, dict):
+                        _mesh_ingest(m, cam["id"])
+        time.sleep(3)
+
+
+@app.get("/api/mesh")
+def api_mesh():
+    now = time.time()
+    with mesh_lock:
+        people = sorted(mesh_people.values(), key=lambda p: -p["last_seen"])
+        return jsonify(
+            sos=sorted(mesh_sos.values(), key=lambda s: -(s["ts"] or 0)),
+            people=[dict(p, active=now - p["last_seen"] < 180) for p in people],
+            nodes=list(mesh_nodes.values()),
+            stats=mesh_stats,
+        )
+
+
+# ----------------------------------------------------------------------
 @app.get("/")
 def index():
     return render_template("index.html")
@@ -298,4 +384,5 @@ if __name__ == "__main__":
     _load_static_cams()
     threading.Thread(target=_poll_static_cams, daemon=True).start()
     threading.Thread(target=_scheduler_loop, daemon=True).start()
+    threading.Thread(target=_mesh_poll_loop, daemon=True).start()
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), threaded=True)

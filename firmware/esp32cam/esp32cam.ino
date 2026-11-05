@@ -11,10 +11,13 @@
  *                           -> ubah setting: framesize, quality, brightness,
  *                              contrast, saturation, vflip, hmirror, flash
  *   http://<ip>:81/stream   -> live stream MJPEG
+ *   /mesh/*, /peer/capture  -> relay pesan MeshLokal (lihat mesh.h)
  *
  * Jaringan (lihat config.h):
- *   USE_ESP_HOTSPOT 1 -> cam1 memancarkan WiFi sendiri, cam2/cam3 + laptop
- *                        connect ke situ dengan IP tetap; server mem-polling.
+ *   USE_ESP_HOTSPOT 1 -> tiap node memancarkan WiFi "MeshLokal-camN" untuk HP,
+ *                        antar node meneruskan pesan lewat ESP-NOW. cam2/cam3 juga
+ *                        ikut WiFi cam1 (IP tetap) supaya dashboard laptop bisa
+ *                        melihat semua kamera.
  *   USE_ESP_HOTSPOT 0 -> semua connect ke router, node mengirim heartbeat ke
  *                        server pusat (SERVER_URL/api/register).
  */
@@ -26,6 +29,10 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ESPmDNS.h>
+#include <esp_arduino_version.h>
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+#include <esp_random.h>
+#endif
 #include "config.h"
 
 // ---------- Pin AI-Thinker ESP32-CAM ----------
@@ -58,13 +65,15 @@ httpd_handle_t stream_httpd = NULL;
 #define STR_(x) #x
 #define STR(x) STR_(x)
 static const char *camId = "cam" STR(CAM_NUMBER);
-static const bool isHotspotHost = USE_ESP_HOTSPOT && CAM_NUMBER == 1;
+static const bool usesUplink = USE_ESP_HOTSPOT && CAM_NUMBER > 1 && JOIN_CAM1_WIFI;
 
 bool flashOn = false;
-unsigned long lastHeartbeat = 0;
+unsigned long lastHeartbeat = 0, lastReconnect = 0;
 
+// IP yang dilaporkan ke dashboard: IP di jaringan cam1/router bila ada, selain itu IP AP sendiri.
 IPAddress myIP() {
-  return isHotspotHost ? WiFi.softAPIP() : WiFi.localIP();
+  if (WiFi.status() == WL_CONNECTED) return WiFi.localIP();
+  return WiFi.softAPIP();
 }
 
 // ------------------------------------------------------------------
@@ -118,16 +127,18 @@ bool initCamera() {
 //  Handler HTTP
 // ------------------------------------------------------------------
 static esp_err_t index_handler(httpd_req_t *req) {
-  char html[512];
+  char html[640];
+  // Host diambil dari alamat yang dipakai browser (IP AP node atau IP di WiFi cam1).
   snprintf(html, sizeof(html),
-           "<html><body style='font-family:sans-serif'>"
+           "<html><head><meta name='viewport' content='width=device-width'></head>"
+           "<body style='font-family:sans-serif;margin:16px'>"
            "<h2>%s (%s)</h2>"
            "<p><a href='/capture'>/capture</a> | <a href='/status'>/status</a> | "
-           "<a href='http://%s:81/stream'>stream</a></p>"
-           "<img src='http://%s:81/stream' style='max-width:100%%'>"
+           "<a href='/mesh/info'>/mesh/info</a></p>"
+           "<img id='s' style='max-width:100%%'>"
+           "<script>document.getElementById('s').src='http://'+location.hostname+':81/stream'</script>"
            "</body></html>",
-           CAM_NAME, camId,
-           myIP().toString().c_str(), myIP().toString().c_str());
+           CAM_NAME, camId);
   httpd_resp_set_type(req, "text/html");
   return httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
 }
@@ -224,10 +235,14 @@ static esp_err_t control_handler(httpd_req_t *req) {
   return status_handler(req);
 }
 
+// Relay MeshLokal (butuh capture_handler & camId di atas)
+#include "mesh.h"
+
 void startServers() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.server_port = 80;
-  config.max_uri_handlers = 8;
+  config.max_uri_handlers = 12;
+  config.stack_size = 8192;  // /peer/capture memakai HTTPClient
 
   httpd_uri_t index_uri   = { "/",        HTTP_GET, index_handler,   NULL };
   httpd_uri_t capture_uri = { "/capture", HTTP_GET, capture_handler, NULL };
@@ -239,6 +254,7 @@ void startServers() {
     httpd_register_uri_handler(api_httpd, &capture_uri);
     httpd_register_uri_handler(api_httpd, &status_uri);
     httpd_register_uri_handler(api_httpd, &control_uri);
+    meshRegisterHttp(api_httpd);
   }
 
   // Stream di port terpisah supaya /capture tetap responsif saat streaming
@@ -253,46 +269,47 @@ void startServers() {
 // ------------------------------------------------------------------
 //  WiFi & heartbeat ke server pusat
 // ------------------------------------------------------------------
-void startHotspot() {
-  // cam1 memancarkan WiFi sendiri (192.168.4.1), maks 8 perangkat
-  WiFi.mode(WIFI_AP);
-  WiFi.softAP(AP_SSID, AP_PASSWORD, AP_CHANNEL, 0, 8);
+// Mode 1: semua node memancarkan AP sendiri, camN (N>1) juga ikut WiFi cam1 bila terjangkau.
+void startMeshWiFi() {
+  WiFi.mode(usesUplink ? WIFI_AP_STA : WIFI_AP);
+  IPAddress apIp = CAM_NUMBER == 1 ? IPAddress(192, 168, 4, 1) : IPAddress(192, 168, 10 + CAM_NUMBER, 1);
+  WiFi.softAPConfig(apIp, apIp, IPAddress(255, 255, 255, 0));
+  String ssid = String(AP_SSID_PREFIX) + CAM_NUMBER;
+  WiFi.softAP(ssid.c_str(), AP_PASSWORD, AP_CHANNEL, 0, 8);
   WiFi.setSleep(false);
-  Serial.printf("Hotspot \"%s\" aktif, IP: %s\n", AP_SSID, myIP().toString().c_str());
-}
+  Serial.printf("WiFi \"%s\" aktif, IP: %s\n", ssid.c_str(), WiFi.softAPIP().toString().c_str());
 
-void connectWiFi() {
-  WiFi.mode(WIFI_STA);
-  WiFi.setSleep(false);  // latensi stream lebih rendah
-
-  const char *ssid = WIFI_SSID, *pass = WIFI_PASSWORD;
-  if (USE_ESP_HOTSPOT) {
-    // cam2/cam3: IP tetap 192.168.4.20x di jaringan hotspot cam1
-    // (di luar rentang DHCP .2-.101 supaya tidak bentrok dengan laptop/HP)
-    ssid = AP_SSID;
-    pass = AP_PASSWORD;
+  if (usesUplink) {
+    // IP tetap 192.168.4.20N, di luar rentang DHCP cam1 supaya tidak bentrok dengan HP/laptop.
     IPAddress gw(192, 168, 4, 1);
     WiFi.config(IPAddress(192, 168, 4, 200 + CAM_NUMBER), gw, IPAddress(255, 255, 255, 0), gw);
-  } else if (strlen(STATIC_IP) > 0) {
+    // Reconnect manual tiap 30 detik: scan terus-menerus mengganggu AP & ESP-NOW.
+    WiFi.setAutoReconnect(false);
+    WiFi.begin((String(AP_SSID_PREFIX) + "1").c_str(), AP_PASSWORD, AP_CHANNEL);
+    lastReconnect = millis();
+  }
+}
+
+// Mode 0: ikut router / hotspot HP.
+void connectRouter() {
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);
+  if (strlen(STATIC_IP) > 0) {
     IPAddress ip, gw, mask;
     ip.fromString(STATIC_IP);
     gw.fromString(GATEWAY_IP);
     mask.fromString(SUBNET_MASK);
     WiFi.config(ip, gw, mask, gw);
   }
-
-  WiFi.begin(ssid, pass);
-  Serial.printf("Menghubungkan ke WiFi \"%s\"", ssid);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  Serial.printf("Menghubungkan ke WiFi \"%s\"", WIFI_SSID);
   unsigned long start = millis();
-  while (WiFi.status() != WL_CONNECTED) {
+  while (WiFi.status() != WL_CONNECTED && millis() - start < 30000) {
     delay(500);
     Serial.print(".");
-    if (millis() - start > 30000) {
-      Serial.println("\nGagal konek WiFi, restart...");
-      ESP.restart();
-    }
   }
-  Serial.printf("\nTerhubung! IP: %s\n", myIP().toString().c_str());
+  Serial.printf("\n%s IP: %s\n", WiFi.status() == WL_CONNECTED ? "Terhubung!" : "Belum terhubung, mencoba terus.",
+                WiFi.localIP().toString().c_str());
 }
 
 void sendHeartbeat() {
@@ -324,8 +341,9 @@ void setup() {
     ESP.restart();
   }
 
-  if (isHotspotHost) startHotspot();
-  else connectWiFi();
+  if (USE_ESP_HOTSPOT) startMeshWiFi();
+  else connectRouter();
+  meshBegin(USE_ESP_HOTSPOT ? WIFI_IF_AP : WIFI_IF_STA);
 
   if (MDNS.begin(camId)) {             // bisa diakses via http://cam1.local
     MDNS.addService("http", "tcp", 80);
@@ -339,16 +357,17 @@ void setup() {
 }
 
 void loop() {
-  if (!isHotspotHost && WiFi.status() != WL_CONNECTED) {
-    Serial.println("WiFi putus, reconnect...");
+  meshLoop();
+
+  bool needsSta = !USE_ESP_HOTSPOT || usesUplink;
+  if (needsSta && WiFi.status() != WL_CONNECTED && millis() - lastReconnect >= 30000) {
+    lastReconnect = millis();
     WiFi.reconnect();
-    delay(5000);
-    return;
   }
 
   if (millis() - lastHeartbeat >= HEARTBEAT_INTERVAL_MS) {
     lastHeartbeat = millis();
     sendHeartbeat();
   }
-  delay(100);
+  delay(5);
 }

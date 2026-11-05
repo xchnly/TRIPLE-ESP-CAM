@@ -124,6 +124,18 @@
   .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .thumb span { position: absolute; left: 4px; bottom: 2px; font: 10px var(--mono); color: #fff; text-shadow: 0 1px 2px #000; }
 
+  /* ---------- mesh ---------- */
+  .sos-chip { display: flex; align-items: center; gap: 7px; background: var(--rec); color: #fff; border: 0;
+              border-radius: 4px; padding: 5px 10px; font: 600 12px var(--mono); letter-spacing: .08em; cursor: pointer; }
+  .item { border: 1px solid var(--line); border-radius: 4px; padding: 9px 10px; margin-bottom: 6px; background: var(--panel-2); }
+  .item.sos { border-color: var(--rec); }
+  .item-h { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+  .item-h b { font-weight: 600; }
+  .item-h span, .item .meta { font: 11px var(--mono); color: var(--muted); }
+  .item .meta { margin-top: 3px; }
+  .item a { color: var(--accent); }
+  .item.dim { opacity: .55; }
+
   /* ---------- lightbox ---------- */
   .lb { position: fixed; inset: 0; background: rgba(6,6,7,.96); display: none; grid-template-rows: 1fr auto; z-index: 20; }
   .lb.open { display: grid; }
@@ -152,6 +164,7 @@
   <div class="seg" title="Live = stream MJPEG, Snapshot = foto diperbarui tiap 3 detik (lebih ringan)">
     <button data-mode="live">Live</button><button data-mode="snap">Snapshot</button>
   </div>
+  <button class="sos-chip" id="sosChip" hidden><i class="dot rec" style="background:#fff"></i><span></span></button>
   <div class="spacer"></div>
   <div class="clock" id="clock"></div>
   <button class="btn primary" id="btnAll">Ambil semua<kbd>A</kbd></button>
@@ -162,7 +175,7 @@
     <div class="empty" id="empty" hidden>
       <b>MENUNGGU KAMERA</b>
       <div>Belum ada ESP32-CAM yang terhubung.</div>
-      <div>Mode hotspot: sambungkan laptop ke WiFi <code>TRIPLE-ESP-CAM</code> dan jalankan <code>python app.py --hotspot</code></div>
+      <div>Mode offline: sambungkan laptop ke WiFi <code>MeshLokal-cam1</code> dan jalankan <code>python app.py --hotspot</code></div>
     </div>
     <div class="toast" id="toast"></div>
   </section>
@@ -171,6 +184,7 @@
     <nav class="tabs">
       <button data-tab="cam" class="on">Kamera</button>
       <button data-tab="gal">Galeri<small id="galCount"></small></button>
+      <button data-tab="mesh">Mesh<small id="meshCount"></small></button>
     </nav>
 
     <div class="pane" id="pane-cam">
@@ -234,6 +248,21 @@
     <div class="pane" id="pane-gal" hidden>
       <div class="filter" id="galFilter"></div>
       <div id="galList"></div>
+    </div>
+
+    <div class="pane" id="pane-mesh" hidden>
+      <div class="sec">
+        <h3>SOS <span id="sosNote"></span></h3>
+        <div id="sosList"></div>
+      </div>
+      <div class="sec">
+        <h3>Orang di jaringan <span>dari aplikasi MeshLokal</span></h3>
+        <div id="peopleList"></div>
+      </div>
+      <div class="sec">
+        <h3>Node <span id="meshStats"></span></h3>
+        <div id="nodeList"></div>
+      </div>
     </div>
 
     <div class="hint">1–9 pilih kamera · F perbesar · Esc kembali<br>C ambil foto kamera terpilih · A ambil semua</div>
@@ -551,9 +580,12 @@ document.querySelectorAll('.seg button').forEach(b => b.onclick = () => setMode(
 
 document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
   document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x === b));
-  $('#pane-cam').hidden = b.dataset.tab !== 'cam';
-  $('#pane-gal').hidden = b.dataset.tab !== 'gal';
+  showTab(b.dataset.tab);
 });
+function showTab(tab) {
+  document.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('on', x.dataset.tab === tab));
+  for (const t of ['cam', 'gal', 'mesh']) $('#pane-' + t).hidden = t !== tab;
+}
 
 document.querySelectorAll('#setSec [data-var]').forEach(inp => {
   const out = inp.parentElement.querySelector('output');
@@ -602,6 +634,57 @@ document.addEventListener('keydown', e => {
 document.addEventListener('visibilitychange', () => state.cams.forEach(c => syncFeed(c.id)));
 new ResizeObserver(layout).observe($('#stage'));
 
+/* ================= mesh (SOS & orang dari aplikasi HP) ================= */
+// Nama & teks berasal dari HP siapa pun di jaringan: selalu di-escape.
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const ago = sec => sec < 60 ? 'baru saja' : sec < 3600 ? `${Math.floor(sec / 60)} mnt lalu` : `${Math.floor(sec / 3600)} jam lalu`;
+const coord = (lat, lon) => lat == null ? '' :
+  `${Math.abs(lat).toFixed(5)}° ${lat < 0 ? 'LS' : 'LU'}, ${Math.abs(lon).toFixed(5)}° ${lon < 0 ? 'BB' : 'BT'}`;
+let knownSos = null;
+
+async function loadMesh() {
+  let m;
+  try { m = await api('/api/mesh'); } catch { return; }
+  const now = Date.now() / 1000;
+  const active = m.people.filter(p => p.active).length;
+  $('#meshCount').textContent = m.sos.length ? ` SOS ${m.sos.length}` : (active ? ` ${active}` : '');
+  $('#meshCount').style.color = m.sos.length ? 'var(--rec)' : '';
+
+  const chip = $('#sosChip');
+  chip.hidden = !m.sos.length;
+  chip.querySelector('span').textContent = `SOS ${m.sos.length}`;
+  const ids = new Set(m.sos.map(s => s.id));
+  if (knownSos && m.sos.some(s => !knownSos.has(s.id))) {
+    const s = m.sos.find(s => !knownSos.has(s.id));
+    toast(`SOS dari ${s.name}`, true);
+    showTab('mesh');
+  }
+  knownSos = ids;
+
+  $('#sosNote').textContent = m.sos.length ? '' : 'tidak ada';
+  $('#sosList').innerHTML = m.sos.map(s => `
+    <div class="item sos">
+      <div class="item-h"><b>${esc(s.name)}</b><span>${s.ts ? new Date(s.ts).toLocaleTimeString('id-ID') : ''}</span></div>
+      ${s.msg ? `<div>${esc(s.msg)}</div>` : ''}
+      <div class="meta">${s.lat != null ? `${coord(s.lat, s.lon)}${s.acc ? ` ±${Math.round(s.acc)} m` : ''}` : 'tanpa lokasi'}</div>
+      <div class="meta">${s.hops} hop · lewat ${esc(s.via)}</div>
+    </div>`).join('');
+
+  $('#peopleList').innerHTML = m.people.length ? m.people.map(p => `
+    <div class="item ${p.active ? '' : 'dim'}">
+      <div class="item-h"><b>${esc(p.name)}</b><span>${ago(now - p.last_seen)}</span></div>
+      <div class="meta">${p.hops} hop · lewat ${esc(p.via)}${p.lat != null ? ' · ' + coord(p.lat, p.lon) : ''}</div>
+    </div>`).join('') : '<p class="muted">Belum ada HP yang terdeteksi.</p>';
+
+  $('#meshStats').textContent = `${m.stats.messages} pesan · ${m.stats.chat} chat terenkripsi`;
+  $('#nodeList').innerHTML = m.nodes.length ? m.nodes.map(n => `
+    <div class="item">
+      <div class="item-h"><b>${esc(n.name)} · ${esc(n.id)}</b><span>${n.relayed ?? 0} diteruskan</span></div>
+      <div class="meta">WiFi ${esc(n.ap)} · tetangga ESP-NOW: ${n.neighbors.length ? n.neighbors.map(x => esc(x.id)).join(', ') : '—'}</div>
+    </div>`).join('') : '<p class="muted">Firmware node belum mendukung mesh, atau node offline.</p>';
+}
+$('#sosChip').onclick = () => showTab('mesh');
+
 function tick() {
   $('#clock').textContent = new Date().toLocaleString('id-ID', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
   const now = new Date().toLocaleTimeString('id-ID');
@@ -609,7 +692,8 @@ function tick() {
 }
 
 setMode(state.mode);
-refreshCams(); loadGallery(); loadSchedule(); tick();
+refreshCams(); loadGallery(); loadSchedule(); loadMesh(); tick();
+setInterval(loadMesh, 3000);
 setInterval(refreshCams, 3000);
 setInterval(loadGallery, 15000);
 setInterval(tick, 1000);
