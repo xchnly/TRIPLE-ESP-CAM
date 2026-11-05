@@ -68,6 +68,7 @@ static const char *camId = "cam" STR(CAM_NUMBER);
 static const bool usesUplink = USE_ESP_HOTSPOT && CAM_NUMBER > 1 && JOIN_CAM1_WIFI;
 
 bool flashOn = false;
+bool cameraOk = false;  // false bila kamera gagal start: WiFi & relay mesh tetap jalan
 unsigned long lastHeartbeat = 0, lastReconnect = 0;
 
 // IP yang dilaporkan ke dashboard: IP di jaringan cam1/router bila ada, selain itu IP AP sendiri.
@@ -143,7 +144,13 @@ static esp_err_t index_handler(httpd_req_t *req) {
   return httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
 }
 
+static esp_err_t camera_unavailable(httpd_req_t *req) {
+  httpd_resp_set_status(req, "503 Service Unavailable");
+  return httpd_resp_send(req, "kamera tidak terdeteksi, cek kabel kamera", HTTPD_RESP_USE_STRLEN);
+}
+
 static esp_err_t capture_handler(httpd_req_t *req) {
+  if (!cameraOk) return camera_unavailable(req);
   camera_fb_t *fb = esp_camera_fb_get();
   // Buang frame lama supaya foto benar-benar "sekarang"
   if (fb) { esp_camera_fb_return(fb); fb = esp_camera_fb_get(); }
@@ -161,6 +168,7 @@ static esp_err_t capture_handler(httpd_req_t *req) {
 }
 
 static esp_err_t stream_handler(httpd_req_t *req) {
+  if (!cameraOk) return camera_unavailable(req);
   char part_buf[64];
   esp_err_t res = httpd_resp_set_type(req, STREAM_CONTENT_TYPE);
   if (res != ESP_OK) return res;
@@ -181,17 +189,19 @@ static esp_err_t stream_handler(httpd_req_t *req) {
 }
 
 static String statusJson() {
-  sensor_t *s = esp_camera_sensor_get();
-  char buf[512];
+  sensor_t *s = cameraOk ? esp_camera_sensor_get() : NULL;
+  camera_status_t cs = {};
+  if (s) cs = s->status;
+  char buf[540];
   snprintf(buf, sizeof(buf),
            "{\"id\":\"%s\",\"name\":\"%s\",\"ip\":\"%s\",\"mac\":\"%s\","
            "\"rssi\":%d,\"uptime\":%lu,\"heap\":%u,\"psram\":%s,"
            "\"framesize\":%d,\"quality\":%d,\"brightness\":%d,\"contrast\":%d,"
-           "\"saturation\":%d,\"vflip\":%d,\"hmirror\":%d,\"flash\":%d}",
+           "\"saturation\":%d,\"vflip\":%d,\"hmirror\":%d,\"flash\":%d,\"camera\":%s}",
            camId, CAM_NAME, myIP().toString().c_str(), WiFi.macAddress().c_str(),
            WiFi.RSSI(), millis() / 1000, ESP.getFreeHeap(), psramFound() ? "true" : "false",
-           s->status.framesize, s->status.quality, s->status.brightness, s->status.contrast,
-           s->status.saturation, s->status.vflip, s->status.hmirror, flashOn ? 1 : 0);
+           cs.framesize, cs.quality, cs.brightness, cs.contrast,
+           cs.saturation, cs.vflip, cs.hmirror, flashOn ? 1 : 0, cameraOk ? "true" : "false");
   return String(buf);
 }
 
@@ -212,8 +222,9 @@ static esp_err_t control_handler(httpd_req_t *req) {
   }
 
   int v = atoi(val);
-  sensor_t *s = esp_camera_sensor_get();
+  sensor_t *s = cameraOk ? esp_camera_sensor_get() : NULL;
   int res = 0;
+  if (!s && strcmp(var, "flash") != 0) return camera_unavailable(req);
 
   if      (!strcmp(var, "framesize"))  { if (s->pixformat == PIXFORMAT_JPEG) res = s->set_framesize(s, (framesize_t)v); }
   else if (!strcmp(var, "quality"))    res = s->set_quality(s, v);
@@ -336,10 +347,9 @@ void setup() {
   pinMode(FLASH_LED_PIN, OUTPUT);
   digitalWrite(FLASH_LED_PIN, LOW);
 
-  if (!initCamera()) {
-    delay(3000);
-    ESP.restart();
-  }
+  // Kamera gagal tidak membuat node mati: WiFi dan relay pesan tetap jalan.
+  cameraOk = initCamera();
+  if (!cameraOk) Serial.println("PERINGATAN: kamera tidak terdeteksi. Cek kabel pita kamera. WiFi & mesh tetap jalan.");
 
   if (USE_ESP_HOTSPOT) startMeshWiFi();
   else connectRouter();
