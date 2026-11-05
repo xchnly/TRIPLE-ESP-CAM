@@ -106,6 +106,11 @@
   select, input[type=number] { background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 4px; padding: 5px 7px; width: 100%; }
   .checks { display: flex; gap: 18px; margin-top: 10px; color: var(--muted); }
   .checks label { display: flex; align-items: center; gap: 7px; cursor: pointer; }
+  .meter { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; margin: 8px 0 4px; }
+  .meter i { display: block; height: 100%; background: var(--accent); }
+  .meter.full i { background: var(--rec); }
+  .store-row { display: grid; grid-template-columns: 1fr 76px 34px; align-items: center; gap: 8px; margin: 7px 0; color: var(--muted); }
+  .store-row span:last-child { font: 11px var(--mono); }
   .sched { display: grid; grid-template-columns: auto 70px auto; align-items: center; gap: 8px; color: var(--muted); }
   .sched label { display: flex; align-items: center; gap: 7px; cursor: pointer; }
   .muted { color: var(--muted); }
@@ -242,6 +247,17 @@
           <input type="number" id="schedInt" min="5" value="60">
           <span>detik</span>
         </div>
+      </div>
+
+      <div class="sec">
+        <h3>Penyimpanan <span id="stUsage"></span></h3>
+        <div class="meter" id="stMeter"><i></i></div>
+        <div class="muted" id="stLast" style="font:11px var(--mono);margin-bottom:10px"></div>
+        <label class="store-row"><span>Hapus foto lebih tua dari</span><input type="number" min="0" step="1" data-st="max_age_hours"><span>jam</span></label>
+        <label class="store-row"><span>Maks. foto per kamera</span><input type="number" min="0" step="10" data-st="max_per_cam"><span>foto</span></label>
+        <label class="store-row"><span>Maks. total ukuran</span><input type="number" min="0" step="50" data-st="max_total_mb"><span>MB</span></label>
+        <p class="muted" style="font-size:12px;margin:8px 0 10px">Foto paling lama dihapus otomatis setiap ada capture baru dan tiap menit. Isi 0 untuk mematikan batas.</p>
+        <button class="btn" id="stClean" style="width:100%">Bersihkan sekarang</button>
       </div>
     </div>
 
@@ -507,6 +523,7 @@ async function controlAll(v, val) {
 
 /* ================= galeri ================= */
 async function loadGallery() {
+  loadStorage();  // galeri berubah = pemakaian penyimpanan berubah
   state.gallery = await api('/api/captures?limit=150');
   $('#galCount').textContent = state.gallery.length ? ` ${state.gallery.length}` : '';
   renderGallery();
@@ -559,6 +576,42 @@ async function deleteCurrent() {
 }
 
 /* ================= jadwal ================= */
+/* ================= penyimpanan ================= */
+const fmtBytes = b => b >= 1073741824 ? (b / 1073741824).toFixed(2) + ' GB' : b >= 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.round(b / 1024) + ' KB';
+
+function renderStorage(st) {
+  const limit = st.policy.max_total_mb * 1048576;
+  const pct = limit ? Math.min(100, st.bytes / limit * 100) : 0;
+  $('#stUsage').textContent = `${st.files} foto · ${fmtBytes(st.bytes)}${limit ? ' / ' + fmtBytes(limit) : ''}`;
+  $('#stMeter').hidden = !limit;
+  $('#stMeter i').style.width = pct + '%';
+  $('#stMeter').classList.toggle('full', pct > 90);
+  const l = st.last_cleanup;
+  $('#stLast').textContent = l.at ? `Pembersihan terakhir ${new Date(l.at * 1000).toLocaleTimeString('id-ID')}: ${l.deleted} foto dihapus (${fmtBytes(l.freed_bytes)})` : '';
+  document.querySelectorAll('[data-st]').forEach(inp => {
+    if (document.activeElement !== inp) inp.value = st.policy[inp.dataset.st];
+  });
+}
+
+async function loadStorage() {
+  try { renderStorage(await api('/api/storage')); } catch {}
+}
+
+document.querySelectorAll('[data-st]').forEach(inp => inp.addEventListener('change', async () => {
+  const r = await api('/api/storage', { method: 'POST', body: JSON.stringify({ [inp.dataset.st]: +inp.value }) });
+  if (r.error) return toast(r.error, true);
+  renderStorage(r);
+  toast(r.last_cleanup.deleted ? `batas disimpan · ${r.last_cleanup.deleted} foto lama dihapus` : 'batas disimpan');
+  loadGallery();
+}));
+
+$('#stClean').onclick = async () => {
+  const r = await api('/api/storage/cleanup', { method: 'POST' });
+  renderStorage(r);
+  toast(`${r.last_cleanup.deleted} foto dihapus · ${fmtBytes(r.last_cleanup.freed_bytes)} dibebaskan`);
+  loadGallery();
+};
+
 async function loadSchedule() {
   const s = await api('/api/schedule');
   $('#schedOn').checked = s.enabled; $('#schedInt').value = s.interval;

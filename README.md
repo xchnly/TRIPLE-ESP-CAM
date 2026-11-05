@@ -101,6 +101,21 @@ Buka `http://localhost:5000`.
   - **Node**: tiap node beserta tetangga ESP-NOW-nya.
   - Chat tidak bisa dibaca di dashboard karena terenkripsi.
 
+### Hapus foto lama otomatis
+
+Supaya folder `server/captures/` tidak makin berat, server menghapus foto lama secara otomatis. Pembersihan berjalan setiap ada capture baru dan setiap 1 menit, dengan 3 aturan berurutan:
+
+1. **Umur**: foto yang lebih tua dari *N jam* dihapus (default 72 jam).
+2. **Jumlah**: tiap kamera hanya menyimpan *N foto terbaru* (default 300).
+3. **Ukuran**: kalau total folder melebihi *N MB* (default 500), foto **paling lama** dihapus satu per satu sampai di bawah batas.
+
+Batasnya bisa diubah di dashboard (tab Kamera → **Penyimpanan**). Isi 0 untuk mematikan satu aturan. Setelan disimpan di `captures/retention.json`, jadi tetap berlaku setelah server di-restart. Kode algoritmanya ada di `server/retention.py`, ujinya di `server/test_retention.py`:
+
+```bash
+cd server
+python -m unittest test_retention
+```
+
 Mode lama dengan router masih ada: set `USE_ESP_HOTSPOT 0` lalu jalankan `python app.py`.
 
 ## Endpoint
@@ -127,6 +142,8 @@ Mode lama dengan router masih ada: set `USE_ESP_HOTSPOT 0` lalu jalankan `python
 | `GET /api/captures` · `DELETE /api/captures/<file>` | Galeri |
 | `GET/POST /api/schedule` | Body `{"enabled":true,"interval":60}` |
 | `GET /api/mesh` | SOS, orang aktif, node |
+| `GET/POST /api/storage` | Pemakaian penyimpanan + batas hapus otomatis, body `{"max_age_hours":72,"max_per_cam":300,"max_total_mb":500}` |
+| `POST /api/storage/cleanup` | Jalankan pembersihan sekarang |
 | `POST /api/register` | Heartbeat node (mode router) |
 
 ## Format pesan mesh

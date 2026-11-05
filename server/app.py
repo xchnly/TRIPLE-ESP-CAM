@@ -16,6 +16,7 @@ Jalankan:
 
 import json
 import os
+from collections import deque
 import sys
 import threading
 import time
@@ -24,6 +25,8 @@ from datetime import datetime
 
 import requests
 from flask import Flask, Response, abort, jsonify, render_template, request, send_from_directory
+
+from retention import Retention
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CAPTURE_DIR = os.environ.get("CAPTURE_DIR", os.path.join(BASE_DIR, "captures"))
@@ -42,6 +45,7 @@ if "--hotspot" in sys.argv and not STATIC_CAMS:
 
 app = Flask(__name__)
 os.makedirs(CAPTURE_DIR, exist_ok=True)
+retention = Retention(CAPTURE_DIR)   # hapus foto lama otomatis, lihat retention.py
 
 cameras = {}                  # id -> dict info node
 cameras_lock = threading.Lock()
@@ -138,6 +142,8 @@ def capture_one(cam_id, batch=None):
     os.makedirs(folder, exist_ok=True)
     with open(os.path.join(folder, filename), "wb") as f:
         f.write(r.content)
+    if batch is None:
+        retention.run()   # capture_all membersihkan sekali setelah semua kamera selesai
     return {"id": cam_id, "ok": True, "file": f"{cam_id}/{filename}", "size": len(r.content)}
 
 
@@ -145,7 +151,9 @@ def capture_all():
     """Ambil foto dari semua kamera online secara paralel (hampir bersamaan)."""
     batch = datetime.now().strftime("%Y%m%d_%H%M%S")
     ids = [c["id"] for c in _cam_snapshot() if c["online"]]
-    return list(executor.map(lambda i: capture_one(i, batch), ids))
+    results = list(executor.map(lambda i: capture_one(i, batch), ids))
+    retention.run()
+    return results
 
 
 @app.post("/api/capture/<cam_id>")
@@ -263,6 +271,35 @@ def delete_capture(filename):
 
 
 # ----------------------------------------------------------------------
+# Penyimpanan: batas umur / jumlah / ukuran foto
+# ----------------------------------------------------------------------
+@app.route("/api/storage", methods=["GET", "POST"])
+def api_storage():
+    if request.method == "POST":
+        try:
+            retention.set_policy(request.get_json(force=True, silent=True) or {})
+        except (TypeError, ValueError) as e:
+            return jsonify(error=str(e)), 400
+        retention.run()
+    return jsonify(retention.stats())
+
+
+@app.post("/api/storage/cleanup")
+def api_storage_cleanup():
+    retention.run()
+    return jsonify(retention.stats())
+
+
+def _retention_loop():
+    while True:
+        try:
+            retention.run()
+        except OSError as e:
+            print(f"Pembersihan foto gagal: {e}")
+        time.sleep(60)
+
+
+# ----------------------------------------------------------------------
 # Auto-capture terjadwal
 # ----------------------------------------------------------------------
 @app.route("/api/schedule", methods=["GET", "POST"])
@@ -299,6 +336,8 @@ def _scheduler_loop():
 mesh_lock = threading.Lock()
 mesh_cursor = {}              # cam_id -> (boot, seq)
 mesh_seen = set()
+mesh_seen_order = deque()     # urutan masuk, supaya mesh_seen tidak tumbuh tanpa batas
+MESH_SEEN_MAX = 5000
 mesh_sos = {}                 # id -> dict
 mesh_people = {}              # pub -> dict
 mesh_nodes = {}               # cam_id -> /mesh/info
@@ -311,6 +350,9 @@ def _mesh_ingest(msg, via):
     if not isinstance(mid, str) or mid in mesh_seen:
         return
     mesh_seen.add(mid)
+    mesh_seen_order.append(mid)
+    if len(mesh_seen_order) > MESH_SEEN_MAX:
+        mesh_seen.discard(mesh_seen_order.popleft())
     mesh_stats["messages"] += 1
     t = msg.get("t")
     hops = max(1, TTL_START.get(t, 8) - int(msg.get("ttl", 0)) + 1)
@@ -385,4 +427,5 @@ if __name__ == "__main__":
     threading.Thread(target=_poll_static_cams, daemon=True).start()
     threading.Thread(target=_scheduler_loop, daemon=True).start()
     threading.Thread(target=_mesh_poll_loop, daemon=True).start()
+    threading.Thread(target=_retention_loop, daemon=True).start()
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), threaded=True)
