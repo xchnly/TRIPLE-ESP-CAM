@@ -6,7 +6,8 @@ plugins {
 
 android {
     namespace = "com.meshlokal.meshlokal"
-    compileSdk = flutter.compileSdkVersion
+    // permission_handler_android butuh SDK 37 (aman: compileSdk tidak mengubah minSdk)
+    compileSdk = 37
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
